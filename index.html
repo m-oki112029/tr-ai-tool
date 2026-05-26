@@ -112,26 +112,16 @@ function showPanel(id, btn) {
   btn.classList.add('active');
 }
 
-// 質問文からキーワードとDBを判定
 function analyzeQuestion(question) {
   const uratoriKeywords = ['仕入先', '仕入れ先', '仕入コスト', '仕入単価', 'メーカー', '製造', '工場', '発注先'];
   const ketteiKeywords = ['売単価', '売値', '実績', '納期', '粗利', '受注', '決定', '案件'];
-
   let useUratori = uratoriKeywords.some(k => question.includes(k));
   let useKettei = ketteiKeywords.some(k => question.includes(k));
-
-  // どちらも該当しない場合は両方使う
-  if (!useUratori && !useKettei) {
-    useUratori = true;
-    useKettei = true;
-  }
-
-  // キーワード抽出（助詞などを除いた名詞っぽい部分）
-  keyword = keyword.replace(/[？?]/g, ' ');
-keyword = keyword.replace(/の|は|を|に|で|が|と|から|まで|について|とは|教えて|ください/g, ' ');
+  if (!useUratori && !useKettei) { useUratori = true; useKettei = true; }
+  let keyword = question.replace(/[？?！!。、]/g, ' ');
+  keyword = keyword.replace(/の|は|を|に|で|が|と|から|まで|について|とは|教えて|ください|どこ|いくら|何|どんな/g, ' ');
   const words = keyword.trim().split(/\s+/).filter(w => w.length >= 2);
   const mainKeyword = words[0] || '';
-
   return { useUratori, useKettei, mainKeyword };
 }
 
@@ -173,27 +163,20 @@ async function sendChat() {
   const input = document.getElementById('chatInput');
   const question = input.value.trim();
   if (!question) return;
-
   const messages = document.getElementById('chatMessages');
   const sendBtn = document.getElementById('sendBtn');
-
   messages.innerHTML += `<div class="message user"><div class="bubble">${question}</div></div>`;
   input.value = '';
   sendBtn.disabled = true;
-
   const loadingId = 'loading-' + Date.now();
   messages.innerHTML += `<div class="message ai" id="${loadingId}"><div class="bubble">🔍 DBを検索中...</div></div>`;
   messages.scrollTop = messages.scrollHeight;
-
   try {
     const { useUratori, useKettei, mainKeyword } = analyzeQuestion(question);
-
     const searches = [];
     if (useKettei) searches.push(searchNotionDB(KETTEI_DB_ID, mainKeyword).then(r => ({ type: 'kettei', results: r })));
     if (useUratori) searches.push(searchNotionDB(URATORI_DB_ID, mainKeyword).then(r => ({ type: 'uratori', results: r })));
-
     const searchResults = await Promise.all(searches);
-
     let contextParts = [];
     for (const { type, results } of searchResults) {
       if (results.length > 0) {
@@ -202,26 +185,20 @@ async function sendChat() {
         contextParts.push(`【${label}】\n${text}`);
       }
     }
-
     const notionContext = contextParts.length > 0 ? contextParts.join('\n\n') : 'データが見つかりませんでした';
-
     const res = await fetch(`${WORKER_URL}/gemini/ask`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question, notionContext })
     });
-
     const data = await res.json();
     const answer = data.answer || 'エラーが発生しました。';
-
     document.getElementById(loadingId).remove();
     messages.innerHTML += `<div class="message ai"><div class="bubble">${answer}</div></div>`;
-
   } catch (e) {
     document.getElementById(loadingId).remove();
     messages.innerHTML += `<div class="message ai"><div class="bubble">エラー: ${e.message}</div></div>`;
   }
-
   sendBtn.disabled = false;
   messages.scrollTop = messages.scrollHeight;
 }
