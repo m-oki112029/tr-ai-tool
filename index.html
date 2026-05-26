@@ -101,7 +101,6 @@
 </div>
 
 <script>
-// Worker URL（Cloudflare）
 const WORKER_URL = "https://tr-notion-proxy.osk-trans52.workers.dev";
 const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
 const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
@@ -113,12 +112,36 @@ function showPanel(id, btn) {
   btn.classList.add('active');
 }
 
-async function searchNotionDB(dbId) {
+// 質問文からキーワードとDBを判定
+function analyzeQuestion(question) {
+  const uratoriKeywords = ['仕入先', '仕入れ先', '仕入コスト', '仕入単価', 'メーカー', '製造', '工場', '発注先'];
+  const ketteiKeywords = ['売単価', '売値', '実績', '納期', '粗利', '受注', '決定', '案件'];
+
+  let useUratori = uratoriKeywords.some(k => question.includes(k));
+  let useKettei = ketteiKeywords.some(k => question.includes(k));
+
+  // どちらも該当しない場合は両方使う
+  if (!useUratori && !useKettei) {
+    useUratori = true;
+    useKettei = true;
+  }
+
+  // キーワード抽出（助詞などを除いた名詞っぽい部分）
+  const stopWords = ['の', 'は', 'を', 'に', 'で', 'が', 'と', 'から', 'まで', 'について', 'とは', '教えて', 'ください', '？', '?'];
+  let keyword = question;
+  stopWords.forEach(w => { keyword = keyword.replace(new RegExp(w, 'g'), ' '); });
+  const words = keyword.trim().split(/\s+/).filter(w => w.length >= 2);
+  const mainKeyword = words[0] || '';
+
+  return { useUratori, useKettei, mainKeyword };
+}
+
+async function searchNotionDB(dbId, keyword) {
   try {
     const response = await fetch(`${WORKER_URL}/notion/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ database_id: dbId })
+      body: JSON.stringify({ database_id: dbId, keyword })
     });
     const data = await response.json();
     return data.results || [];
@@ -164,15 +187,24 @@ async function sendChat() {
   messages.scrollTop = messages.scrollHeight;
 
   try {
-    const [ketteiPages, uratoriPages] = await Promise.all([
-      searchNotionDB(KETTEI_DB_ID),
-      searchNotionDB(URATORI_DB_ID)
-    ]);
+    const { useUratori, useKettei, mainKeyword } = analyzeQuestion(question);
 
-    const ketteiText = ketteiPages.slice(0, 30).map(p => pageToText(p, 'kettei')).join('\n');
-    const uratoriText = uratoriPages.slice(0, 30).map(p => pageToText(p, 'uratori')).join('\n');
+    const searches = [];
+    if (useKettei) searches.push(searchNotionDB(KETTEI_DB_ID, mainKeyword).then(r => ({ type: 'kettei', results: r })));
+    if (useUratori) searches.push(searchNotionDB(URATORI_DB_ID, mainKeyword).then(r => ({ type: 'uratori', results: r })));
 
-    const notionContext = `【決定商品DB】\n${ketteiText || 'データなし'}\n\n【裏取りDB】\n${uratoriText || 'データなし'}`;
+    const searchResults = await Promise.all(searches);
+
+    let contextParts = [];
+    for (const { type, results } of searchResults) {
+      if (results.length > 0) {
+        const label = type === 'kettei' ? '決定商品DB（過去の受注実績）' : '裏取りDB（仕入先・コスト情報）';
+        const text = results.slice(0, 50).map(p => pageToText(p, type)).join('\n');
+        contextParts.push(`【${label}】\n${text}`);
+      }
+    }
+
+    const notionContext = contextParts.length > 0 ? contextParts.join('\n\n') : 'データが見つかりませんでした';
 
     const res = await fetch(`${WORKER_URL}/gemini/ask`, {
       method: 'POST',
