@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TR大阪 AI提案ツール</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', sans-serif; background: #f5f5f5; color: #333; }
+  .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+  header { background: #1a3a5c; color: white; padding: 16px 20px; margin-bottom: 20px; border-radius: 8px; }
+  header h1 { font-size: 20px; font-weight: bold; }
+  header p { font-size: 13px; opacity: 0.8; margin-top: 4px; }
+  .menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+  .menu-btn { background: white; border: 2px solid #ddd; border-radius: 8px; padding: 16px; cursor: pointer; text-align: left; transition: all 0.2s; }
+  .menu-btn:hover { border-color: #1a3a5c; }
+  .menu-btn.active { border-color: #1a3a5c; background: #eef3f8; }
+  .menu-btn .icon { font-size: 24px; margin-bottom: 8px; }
+  .menu-btn h3 { font-size: 14px; font-weight: bold; color: #1a3a5c; margin-bottom: 4px; }
+  .menu-btn p { font-size: 12px; color: #666; line-height: 1.4; }
+  .panel { background: white; border-radius: 8px; padding: 20px; display: none; }
+  .panel.active { display: block; }
+  .panel h2 { font-size: 16px; font-weight: bold; color: #1a3a5c; margin-bottom: 16px; border-bottom: 2px solid #eef3f8; padding-bottom: 8px; }
+  .chat-messages { height: 400px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 16px; margin-bottom: 12px; background: #fafafa; }
+  .message { margin-bottom: 12px; }
+  .message.user { text-align: right; }
+  .message.ai { text-align: left; }
+  .bubble { display: inline-block; max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+  .message.user .bubble { background: #1a3a5c; color: white; border-bottom-right-radius: 4px; }
+  .message.ai .bubble { background: #eef3f8; color: #333; border-bottom-left-radius: 4px; }
+  .input-row { display: flex; gap: 8px; }
+  .input-row input { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; }
+  .input-row input:focus { border-color: #1a3a5c; }
+  .input-row button { padding: 10px 20px; background: #1a3a5c; color: white; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  .input-row button:hover { background: #2a5a8c; }
+  .input-row button:disabled { background: #999; cursor: not-allowed; }
+  .settings-notice { background: #fff8e1; border: 1px solid #f0c040; border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 13px; color: #7a6000; }
+  .coming-soon { text-align: center; padding: 40px 20px; color: #999; }
+  .coming-soon .icon { font-size: 48px; margin-bottom: 12px; }
+  .coming-soon p { font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>TR大阪 AI提案ツール</h1>
+    <p>過去実績DBをもとにアイテム提案・仕入先検索を自動化します</p>
+  </header>
+
+  <div class="settings-notice" id="settingsNotice">
+    初回設定が必要です。HTMLファイル内の設定欄にAPIキーを入力してください。
+  </div>
+
+  <div class="menu-grid">
+    <button class="menu-btn active" onclick="showPanel('chat', this)">
+      <div class="icon">💬</div>
+      <h3>一問一答</h3>
+      <p>商品の価格感や仕入先を気軽に質問</p>
+    </button>
+    <button class="menu-btn" onclick="showPanel('suggest', this)">
+      <div class="icon">✨</div>
+      <h3>アイテム提案</h3>
+      <p>予算・条件からアイテムをピックアップ</p>
+    </button>
+    <button class="menu-btn" onclick="showPanel('supplier', this)">
+      <div class="icon">🏭</div>
+      <h3>仕入先検索</h3>
+      <p>商品カテゴリから仕入先と概算を検索</p>
+    </button>
+    <button class="menu-btn" onclick="showPanel('report', this)">
+      <div class="icon">📊</div>
+      <h3>実績資料</h3>
+      <p>直近の決定商品データをまとめる</p>
+    </button>
+  </div>
+
+  <div class="panel active" id="panel-chat">
+    <h2>💬 一問一答</h2>
+    <div class="chat-messages" id="chatMessages">
+      <div class="message ai">
+        <div class="bubble">こんにちは！過去の実績DBをもとに質問に答えます。商品の価格感、仕入先、実績件数など気軽に聞いてください。
+
+例：「エコバッグの平均売単価は？」「タオルの仕入先は？」「アクリルスタンドの実績は？」</div>
+      </div>
+    </div>
+    <div class="input-row">
+      <input type="text" id="chatInput" placeholder="質問を入力してください..." onkeydown="if(event.key==='Enter')sendChat()" />
+      <button onclick="sendChat()" id="sendBtn">送信</button>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-suggest">
+    <h2>✨ アイテム提案</h2>
+    <div class="coming-soon"><div class="icon">🚧</div><p>近日公開予定です</p></div>
+  </div>
+
+  <div class="panel" id="panel-supplier">
+    <h2>🏭 仕入先検索</h2>
+    <div class="coming-soon"><div class="icon">🚧</div><p>近日公開予定です</p></div>
+  </div>
+
+  <div class="panel" id="panel-report">
+    <h2>📊 実績資料</h2>
+    <div class="coming-soon"><div class="icon">🚧</div><p>近日公開予定です</p></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// ★ 設定欄：ここにAPIキーを入力してください
+// ============================================================
+const GEMINI_API_KEY = "AIzaSyDjodOtZfXP5Arah2EWQIcQ00VX5_Cx8yc";
+const NOTION_TOKEN = "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";
+const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
+const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
+// ============================================================
+
+if (GEMINI_API_KEY !== "ここにGeminiのAPIキーを貼り付け") {
+  document.getElementById("settingsNotice").style.display = "none";
+}
+
+function showPanel(id, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.menu-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + id).classList.add('active');
+  btn.classList.add('active');
+}
+
+async function searchNotionDB(dbId) {
+  try {
+    const response = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({ page_size: 50 })
+    });
+    const data = await response.json();
+    return data.results || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function pageToText(page, type) {
+  const p = page.properties;
+  if (type === 'kettei') {
+    const name = p['商材名']?.title?.[0]?.text?.content || '';
+    const price = p['売単価']?.number || '';
+    const cat = p['カテゴリ']?.select?.name || '';
+    const sup = p['仕入先']?.rich_text?.[0]?.text?.content || '';
+    const qty = p['数量']?.number || '';
+    const margin = p['粗利率']?.number ? Math.round(p['粗利率'].number * 100) + '%' : '';
+    const date = p['納期']?.date?.start || '';
+    return `商材名:${name} カテゴリ:${cat} 売単価:${price}円 数量:${qty} 粗利率:${margin} 仕入先:${sup} 納期:${date}`;
+  } else {
+    const name = p['商品名']?.title?.[0]?.text?.content || '';
+    const sup = p['仕入先']?.rich_text?.[0]?.text?.content || '';
+    const cost = p['仕入単価']?.number || '';
+    const cat = p['商品分類']?.select?.name || '';
+    return `商品名:${name} 分類:${cat} 仕入先:${sup} 仕入単価:${cost}円`;
+  }
+}
+
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const question = input.value.trim();
+  if (!question) return;
+
+  const messages = document.getElementById('chatMessages');
+  const sendBtn = document.getElementById('sendBtn');
+
+  messages.innerHTML += `<div class="message user"><div class="bubble">${question}</div></div>`;
+  input.value = '';
+  sendBtn.disabled = true;
+
+  const loadingId = 'loading-' + Date.now();
+  messages.innerHTML += `<div class="message ai" id="${loadingId}"><div class="bubble">🔍 DBを検索中...</div></div>`;
+  messages.scrollTop = messages.scrollHeight;
+
+  try {
+    const [ketteiPages, uratoriPages] = await Promise.all([
+      searchNotionDB(KETTEI_DB_ID),
+      searchNotionDB(URATORI_DB_ID)
+    ]);
+
+    const ketteiText = ketteiPages.slice(0, 30).map(p => pageToText(p, 'kettei')).join('\n');
+    const uratoriText = uratoriPages.slice(0, 30).map(p => pageToText(p, 'uratori')).join('\n');
+
+    const prompt = `あなたはノベルティ・販促グッズの営業支援AIです。以下のデータをもとに質問に答えてください。
+
+【決定商品DB（過去の受注実績）】
+${ketteiText || 'データなし'}
+
+【裏取りDB（仕入先・コスト情報）】
+${uratoriText || 'データなし'}
+
+【質問】${question}
+
+日本語で簡潔に、具体的な数字や商品名を使って答えてください。`;
+
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    });
+
+    const data = await res.json();
+    const answer = data.candidates?.[0]?.content?.parts?.[0]?.text || 'エラーが発生しました。';
+
+    document.getElementById(loadingId).remove();
+    messages.innerHTML += `<div class="message ai"><div class="bubble">${answer}</div></div>`;
+
+  } catch (e) {
+    document.getElementById(loadingId).remove();
+    messages.innerHTML += `<div class="message ai"><div class="bubble">エラー: ${e.message}</div></div>`;
+  }
+
+  sendBtn.disabled = false;
+  messages.scrollTop = messages.scrollHeight;
+}
+</script>
+</body>
+</html>
