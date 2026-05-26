@@ -34,7 +34,6 @@
   .input-row button { padding: 10px 20px; background: #1a3a5c; color: white; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
   .input-row button:hover { background: #2a5a8c; }
   .input-row button:disabled { background: #999; cursor: not-allowed; }
-  .settings-notice { background: #fff8e1; border: 1px solid #f0c040; border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 13px; color: #7a6000; }
   .coming-soon { text-align: center; padding: 40px 20px; color: #999; }
   .coming-soon .icon { font-size: 48px; margin-bottom: 12px; }
   .coming-soon p { font-size: 14px; }
@@ -46,10 +45,6 @@
     <h1>TR大阪 AI提案ツール</h1>
     <p>過去実績DBをもとにアイテム提案・仕入先検索を自動化します</p>
   </header>
-
-  <div class="settings-notice" id="settingsNotice">
-    初回設定が必要です。HTMLファイル内の設定欄にAPIキーを入力してください。
-  </div>
 
   <div class="menu-grid">
     <button class="menu-btn active" onclick="showPanel('chat', this)">
@@ -106,18 +101,10 @@
 </div>
 
 <script>
-// ============================================================
-// ★ 設定欄：ここにAPIキーを入力してください
-// ============================================================
-const GEMINI_API_KEY = "";
-const NOTION_TOKEN = "";
-const KETTEI_DB_ID = "";
-const URATORI_DB_ID = "";
-// ============================================================
-
-if (GEMINI_API_KEY !== "ここにGeminiのAPIキーを貼り付け") {
-  document.getElementById("settingsNotice").style.display = "none";
-}
+// Worker URL（Cloudflare）
+const WORKER_URL = "https://tr-notion-proxy.osk-trans52.workers.dev";
+const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
+const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
 
 function showPanel(id, btn) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -128,14 +115,10 @@ function showPanel(id, btn) {
 
 async function searchNotionDB(dbId) {
   try {
-    const response = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+    const response = await fetch(`${WORKER_URL}/notion/search`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      body: JSON.stringify({ page_size: 50 })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ database_id: dbId })
     });
     const data = await response.json();
     return data.results || [];
@@ -189,26 +172,16 @@ async function sendChat() {
     const ketteiText = ketteiPages.slice(0, 30).map(p => pageToText(p, 'kettei')).join('\n');
     const uratoriText = uratoriPages.slice(0, 30).map(p => pageToText(p, 'uratori')).join('\n');
 
-    const prompt = `あなたはノベルティ・販促グッズの営業支援AIです。以下のデータをもとに質問に答えてください。
+    const notionContext = `【決定商品DB】\n${ketteiText || 'データなし'}\n\n【裏取りDB】\n${uratoriText || 'データなし'}`;
 
-【決定商品DB（過去の受注実績）】
-${ketteiText || 'データなし'}
-
-【裏取りDB（仕入先・コスト情報）】
-${uratoriText || 'データなし'}
-
-【質問】${question}
-
-日本語で簡潔に、具体的な数字や商品名を使って答えてください。`;
-
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    const res = await fetch(`${WORKER_URL}/gemini/ask`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      body: JSON.stringify({ question, notionContext })
     });
 
     const data = await res.json();
-    const answer = data.candidates?.[0]?.content?.parts?.[0]?.text || 'エラーが発生しました。';
+    const answer = data.answer || 'エラーが発生しました。';
 
     document.getElementById(loadingId).remove();
     messages.innerHTML += `<div class="message ai"><div class="bubble">${answer}</div></div>`;
