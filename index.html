@@ -115,24 +115,24 @@ function showPanel(id, btn) {
 function analyzeQuestion(question) {
   const uratoriKeywords = ['仕入先', '仕入れ先', '仕入コスト', '仕入単価', 'メーカー', '製造', '工場', '発注先'];
   const ketteiKeywords = ['売単価', '売値', '実績', '納期', '粗利', '受注', '決定', '案件'];
-  let useUratori = uratoriKeywords.some(k => question.includes(k));
-  let useKettei = ketteiKeywords.some(k => question.includes(k));
+  let useUratori = uratoriKeywords.some(function(k) { return question.includes(k); });
+  let useKettei = ketteiKeywords.some(function(k) { return question.includes(k); });
   if (!useUratori && !useKettei) { useUratori = true; useKettei = true; }
-  let keyword = question.replace(/[？?！!。、]/g, ' ');
-  keyword = keyword.replace(/の|は|を|に|で|が|と|から|まで|について|とは|教えて|ください|どこ|いくら|何|どんな/g, ' ');
-  const words = keyword.trim().split(/\s+/).filter(w => w.length >= 2);
-  const mainKeyword = words[0] || '';
-  return { useUratori, useKettei, mainKeyword };
+  var kw = question.replace(/[？?！!。、]/g, ' ');
+  kw = kw.replace(/の|は|を|に|で|が|と|から|まで|について|とは|教えて|ください|どこ|いくら|何|どんな/g, ' ');
+  var words = kw.trim().split(/\s+/).filter(function(w) { return w.length >= 2; });
+  var mainKeyword = words[0] || '';
+  return { useUratori: useUratori, useKettei: useKettei, mainKeyword: mainKeyword };
 }
 
-async function searchNotionDB(dbId, keyword) {
+async function searchNotionDB(dbId, kw) {
   try {
-    const response = await fetch(`${WORKER_URL}/notion/search`, {
+    var response = await fetch(WORKER_URL + '/notion/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ database_id: dbId, keyword })
+      body: JSON.stringify({ database_id: dbId, keyword: kw })
     });
-    const data = await response.json();
+    var data = await response.json();
     return data.results || [];
   } catch (e) {
     return [];
@@ -140,64 +140,69 @@ async function searchNotionDB(dbId, keyword) {
 }
 
 function pageToText(page, type) {
-  const p = page.properties;
+  var p = page.properties;
   if (type === 'kettei') {
-    const name = p['商材名']?.title?.[0]?.text?.content || '';
-    const price = p['売単価']?.number || '';
-    const cat = p['カテゴリ']?.select?.name || '';
-    const sup = p['仕入先']?.rich_text?.[0]?.text?.content || '';
-    const qty = p['数量']?.number || '';
-    const margin = p['粗利率']?.number ? Math.round(p['粗利率'].number * 100) + '%' : '';
-    const date = p['納期']?.date?.start || '';
-    return `商材名:${name} カテゴリ:${cat} 売単価:${price}円 数量:${qty} 粗利率:${margin} 仕入先:${sup} 納期:${date}`;
+    var name = (p['商材名'] && p['商材名'].title && p['商材名'].title[0]) ? p['商材名'].title[0].text.content : '';
+    var price = (p['売単価'] && p['売単価'].number) ? p['売単価'].number : '';
+    var cat = (p['カテゴリ'] && p['カテゴリ'].select) ? p['カテゴリ'].select.name : '';
+    var sup = (p['仕入先'] && p['仕入先'].rich_text && p['仕入先'].rich_text[0]) ? p['仕入先'].rich_text[0].text.content : '';
+    var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : '';
+    var margin = (p['粗利率'] && p['粗利率'].number) ? Math.round(p['粗利率'].number * 100) + '%' : '';
+    var date = (p['納期'] && p['納期'].date) ? p['納期'].date.start : '';
+    return '商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 納期:' + date;
   } else {
-    const name = p['商品名']?.title?.[0]?.text?.content || '';
-    const sup = p['仕入先']?.rich_text?.[0]?.text?.content || '';
-    const cost = p['仕入単価']?.number || '';
-    const cat = p['商品分類']?.select?.name || '';
-    return `商品名:${name} 分類:${cat} 仕入先:${sup} 仕入単価:${cost}円`;
+    var name2 = (p['商品名'] && p['商品名'].title && p['商品名'].title[0]) ? p['商品名'].title[0].text.content : '';
+    var sup2 = (p['仕入先'] && p['仕入先'].rich_text && p['仕入先'].rich_text[0]) ? p['仕入先'].rich_text[0].text.content : '';
+    var cost = (p['仕入単価'] && p['仕入単価'].number) ? p['仕入単価'].number : '';
+    var cat2 = (p['商品分類'] && p['商品分類'].select) ? p['商品分類'].select.name : '';
+    return '商品名:' + name2 + ' 分類:' + cat2 + ' 仕入先:' + sup2 + ' 仕入単価:' + cost + '円';
   }
 }
 
 async function sendChat() {
-  const input = document.getElementById('chatInput');
-  const question = input.value.trim();
+  var input = document.getElementById('chatInput');
+  var question = input.value.trim();
   if (!question) return;
-  const messages = document.getElementById('chatMessages');
-  const sendBtn = document.getElementById('sendBtn');
-  messages.innerHTML += `<div class="message user"><div class="bubble">${question}</div></div>`;
+  var messages = document.getElementById('chatMessages');
+  var sendBtn = document.getElementById('sendBtn');
+  messages.innerHTML += '<div class="message user"><div class="bubble">' + question + '</div></div>';
   input.value = '';
   sendBtn.disabled = true;
-  const loadingId = 'loading-' + Date.now();
-  messages.innerHTML += `<div class="message ai" id="${loadingId}"><div class="bubble">🔍 DBを検索中...</div></div>`;
+  var loadingId = 'loading-' + Date.now();
+  messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">検索中...</div></div>';
   messages.scrollTop = messages.scrollHeight;
   try {
-    const { useUratori, useKettei, mainKeyword } = analyzeQuestion(question);
-    const searches = [];
-    if (useKettei) searches.push(searchNotionDB(KETTEI_DB_ID, mainKeyword).then(r => ({ type: 'kettei', results: r })));
-    if (useUratori) searches.push(searchNotionDB(URATORI_DB_ID, mainKeyword).then(r => ({ type: 'uratori', results: r })));
-    const searchResults = await Promise.all(searches);
-    let contextParts = [];
-    for (const { type, results } of searchResults) {
+    var analyzed = analyzeQuestion(question);
+    var useUratori = analyzed.useUratori;
+    var useKettei = analyzed.useKettei;
+    var mainKeyword = analyzed.mainKeyword;
+    var searches = [];
+    if (useKettei) searches.push(searchNotionDB(KETTEI_DB_ID, mainKeyword).then(function(r) { return { type: 'kettei', results: r }; }));
+    if (useUratori) searches.push(searchNotionDB(URATORI_DB_ID, mainKeyword).then(function(r) { return { type: 'uratori', results: r }; }));
+    var searchResults = await Promise.all(searches);
+    var contextParts = [];
+    for (var i = 0; i < searchResults.length; i++) {
+      var type = searchResults[i].type;
+      var results = searchResults[i].results;
       if (results.length > 0) {
-        const label = type === 'kettei' ? '決定商品DB（過去の受注実績）' : '裏取りDB（仕入先・コスト情報）';
-        const text = results.slice(0, 50).map(p => pageToText(p, type)).join('\n');
-        contextParts.push(`【${label}】\n${text}`);
+        var label = type === 'kettei' ? '決定商品DB（過去の受注実績）' : '裏取りDB（仕入先・コスト情報）';
+        var text = results.slice(0, 50).map(function(p) { return pageToText(p, type); }).join('\n');
+        contextParts.push('【' + label + '】\n' + text);
       }
     }
-    const notionContext = contextParts.length > 0 ? contextParts.join('\n\n') : 'データが見つかりませんでした';
-    const res = await fetch(`${WORKER_URL}/gemini/ask`, {
+    var notionContext = contextParts.length > 0 ? contextParts.join('\n\n') : 'データが見つかりませんでした';
+    var res = await fetch(WORKER_URL + '/gemini/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, notionContext })
+      body: JSON.stringify({ question: question, notionContext: notionContext })
     });
-    const data = await res.json();
-    const answer = data.answer || 'エラーが発生しました。';
+    var data = await res.json();
+    var answer = data.answer || 'エラーが発生しました。';
     document.getElementById(loadingId).remove();
-    messages.innerHTML += `<div class="message ai"><div class="bubble">${answer}</div></div>`;
+    messages.innerHTML += '<div class="message ai"><div class="bubble">' + answer + '</div></div>';
   } catch (e) {
     document.getElementById(loadingId).remove();
-    messages.innerHTML += `<div class="message ai"><div class="bubble">エラー: ${e.message}</div></div>`;
+    messages.innerHTML += '<div class="message ai"><div class="bubble">エラー: ' + e.message + '</div></div>';
   }
   sendBtn.disabled = false;
   messages.scrollTop = messages.scrollHeight;
