@@ -127,9 +127,8 @@ function analyzeQuestion(question) {
   }
 
   // キーワード抽出（助詞などを除いた名詞っぽい部分）
-  const stopWords = ['の', 'は', 'を', 'に', 'で', 'が', 'と', 'から', 'まで', 'について', 'とは', '教えて', 'ください', '？', '?'];
-  let keyword = question;
-  stopWords.forEach(w => { keyword = keyword.replace(new RegExp(w, 'g'), ' '); });
+  keyword = keyword.replace(/[？?]/g, ' ');
+keyword = keyword.replace(/の|は|を|に|で|が|と|から|まで|について|とは|教えて|ください/g, ' ');
   const words = keyword.trim().split(/\s+/).filter(w => w.length >= 2);
   const mainKeyword = words[0] || '';
 
