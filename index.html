@@ -173,7 +173,7 @@ async function sendChat() {
     ]);
     var allData = [];
     for (var i = 0; i < results.length; i++) {
-      var items = results[i].results.slice(0, 30);
+      var items = results[i].results.slice(0, 10);
       for (var j = 0; j < items.length; j++) {
         allData.push(pageToText(items[j], results[i].type));
       }
