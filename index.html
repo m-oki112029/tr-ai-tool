@@ -75,7 +75,7 @@
       <div class="message ai">
         <div class="bubble">こんにちは！過去の実績DBをもとに質問に答えます。商品の価格感、仕入先、実績件数など気軽に聞いてください。
 
-例：「エコバッグの平均売単価は？」「タオルの仕入先は？」「アクリルスタンドの実績は？」</div>
+例：「タオルの仕入先と売単価は？」「アクリルスタンドの実績は？」「エコバッグの粗利率は？」</div>
       </div>
     </div>
     <div class="input-row">
@@ -112,17 +112,11 @@ function showPanel(id, btn) {
   btn.classList.add('active');
 }
 
-function analyzeQuestion(question) {
-  const uratoriKeywords = ['仕入先', '仕入れ先', '仕入コスト', '仕入単価', 'メーカー', '製造', '工場', '発注先'];
-  const ketteiKeywords = ['売単価', '売値', '実績', '納期', '粗利', '受注', '決定', '案件'];
-  let useUratori = uratoriKeywords.some(function(k) { return question.includes(k); });
-  let useKettei = ketteiKeywords.some(function(k) { return question.includes(k); });
-  if (!useUratori && !useKettei) { useUratori = true; useKettei = true; }
-  var kw = question.replace(/[？?！!。、]/g, ' ');
-  kw = kw.replace(/の|は|を|に|で|が|と|から|まで|について|とは|教えて|ください|どこ|いくら|何|どんな/g, ' ');
-  var words = kw.trim().split(/\s+/).filter(function(w) { return w.length >= 2; });
-  var mainKeyword = words[0] || '';
-  return { useUratori: useUratori, useKettei: useKettei, mainKeyword: mainKeyword };
+function extractKeyword(question) {
+  var kw = question.replace(/[？?！!。、「」『』]/g, ' ');
+  kw = kw.replace(/決定商品|裏取り|データベース|から|最近|情報|出して|教えて|ください|について|とは|どこ|いくら|どんな|の|は|を|に|で|が|と|まで/g, ' ');
+  var words = kw.trim().split(/\s+/).filter(function(w) { return w.length >= 1; });
+  return words[0] || '';
 }
 
 async function searchNotionDB(dbId, kw) {
@@ -149,13 +143,13 @@ function pageToText(page, type) {
     var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : '';
     var margin = (p['粗利率'] && p['粗利率'].number) ? Math.round(p['粗利率'].number * 100) + '%' : '';
     var date = (p['納期'] && p['納期'].date) ? p['納期'].date.start : '';
-    return '商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 納期:' + date;
+    return '[受注実績] 商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 納期:' + date;
   } else {
     var name2 = (p['商品名'] && p['商品名'].title && p['商品名'].title[0]) ? p['商品名'].title[0].text.content : '';
     var sup2 = (p['仕入先'] && p['仕入先'].rich_text && p['仕入先'].rich_text[0]) ? p['仕入先'].rich_text[0].text.content : '';
     var cost = (p['仕入単価'] && p['仕入単価'].number) ? p['仕入単価'].number : '';
     var cat2 = (p['商品分類'] && p['商品分類'].select) ? p['商品分類'].select.name : '';
-    return '商品名:' + name2 + ' 分類:' + cat2 + ' 仕入先:' + sup2 + ' 仕入単価:' + cost + '円';
+    return '[仕入情報] 商品名:' + name2 + ' 分類:' + cat2 + ' 仕入先:' + sup2 + ' 仕入単価:' + cost + '円';
   }
 }
 
@@ -169,28 +163,22 @@ async function sendChat() {
   input.value = '';
   sendBtn.disabled = true;
   var loadingId = 'loading-' + Date.now();
-  messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">検索中...</div></div>';
+  messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">🔍 DBを検索中...</div></div>';
   messages.scrollTop = messages.scrollHeight;
   try {
-    var analyzed = analyzeQuestion(question);
-    var useUratori = analyzed.useUratori;
-    var useKettei = analyzed.useKettei;
-    var mainKeyword = analyzed.mainKeyword;
-    var searches = [];
-    if (useKettei) searches.push(searchNotionDB(KETTEI_DB_ID, mainKeyword).then(function(r) { return { type: 'kettei', results: r }; }));
-    if (useUratori) searches.push(searchNotionDB(URATORI_DB_ID, mainKeyword).then(function(r) { return { type: 'uratori', results: r }; }));
-    var searchResults = await Promise.all(searches);
-    var contextParts = [];
-    for (var i = 0; i < searchResults.length; i++) {
-      var type = searchResults[i].type;
-      var results = searchResults[i].results;
-      if (results.length > 0) {
-        var label = type === 'kettei' ? '決定商品DB（過去の受注実績）' : '裏取りDB（仕入先・コスト情報）';
-        var text = results.slice(0, 50).map(function(p) { return pageToText(p, type); }).join('\n');
-        contextParts.push('【' + label + '】\n' + text);
+    var mainKeyword = extractKeyword(question);
+    var results = await Promise.all([
+      searchNotionDB(KETTEI_DB_ID, mainKeyword).then(function(r) { return { type: 'kettei', results: r }; }),
+      searchNotionDB(URATORI_DB_ID, mainKeyword).then(function(r) { return { type: 'uratori', results: r }; })
+    ]);
+    var allData = [];
+    for (var i = 0; i < results.length; i++) {
+      var items = results[i].results.slice(0, 30);
+      for (var j = 0; j < items.length; j++) {
+        allData.push(pageToText(items[j], results[i].type));
       }
     }
-    var notionContext = contextParts.length > 0 ? contextParts.join('\n\n') : 'データが見つかりませんでした';
+    var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
     var res = await fetch(WORKER_URL + '/gemini/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
