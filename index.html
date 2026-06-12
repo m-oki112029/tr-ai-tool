@@ -101,6 +101,7 @@
     <div class="input-row">
       <input type="text" id="supplierInput" placeholder="商品名・仕様を入力してください..." onkeydown="if(event.key==='Enter')sendSupplier()" />
       <button onclick="sendSupplier()" id="supplierBtn">検索</button>
+      <button onclick="resetSupplier()" id="supplierResetBtn" style="background:#888;">新しく検索</button>
     </div>
   </div>
 
@@ -261,8 +262,25 @@ async function sendChat() {
   messages.scrollTop = messages.scrollHeight;
 }
 
-// 仕入先検索の会話履歴（一問一答とは別に管理）
-var supplierHistory = [];
+// 仕入先検索の状態管理
+var supplierHistory = [];      // 会話履歴
+var supplierAllResults = [];   // Notionから取得した全件データ（最大100件）
+var supplierShownCount = 0;    // 現在Geminiに渡した件数
+var SUPPLIER_PAGE_SIZE = 15;   // 1回に渡す件数
+
+function resetSupplier() {
+  supplierHistory = [];
+  supplierAllResults = [];
+  supplierShownCount = 0;
+  var messages = document.getElementById('supplierMessages');
+  messages.innerHTML = '<div class="message ai"><div class="bubble">仕入先を調べたい商品名・仕様を入力してください。裏取りDBから仕入先候補と仕様・コスト情報を出します。\n\n例：「アクリルスタンド」「フェイスタオル 刺繍あり」「エコバッグ 不織布」</div></div>';
+  document.getElementById('supplierInput').value = '';
+}
+
+// 「もっとちょうだい」系のキーワード判定
+function isMoreRequest(question) {
+  return /もっと|追加|他に|ほか|まだある|さらに|もう少し/.test(question);
+}
 
 async function sendSupplier() {
   var input = document.getElementById('supplierInput');
@@ -276,23 +294,46 @@ async function sendSupplier() {
   btn.disabled = true;
 
   var loadingId = 'loading-' + Date.now();
-  messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">🔍 裏取りDBを検索中...</div></div>';
   messages.scrollTop = messages.scrollHeight;
 
   try {
-    var keywords = extractKeywords(question);
-    var primaryKeyword = keywords[0] || '';
+    var notionContext = '';
 
-    // 裏取りDBのみ検索
-    var results = await searchNotionDB(URATORI_DB_ID, primaryKeyword);
+    // 「もっとちょうだい」の場合：次の15件を追加
+    if (isMoreRequest(question) && supplierAllResults.length > 0) {
+      messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">🔍 追加データを取得中...</div></div>';
+      var nextItems = supplierAllResults.slice(supplierShownCount, supplierShownCount + SUPPLIER_PAGE_SIZE);
+      if (nextItems.length === 0) {
+        document.getElementById(loadingId).remove();
+        messages.innerHTML += '<div class="message ai"><div class="bubble">これ以上データはありません。「新しく検索」ボタンで別の商品を検索できます。</div></div>';
+        btn.disabled = false;
+        messages.scrollTop = messages.scrollHeight;
+        return;
+      }
+      notionContext = nextItems.map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
+      supplierShownCount += nextItems.length;
 
-    // ヒット0件なら2番目のキーワードでリトライ
-    if (results.length === 0 && keywords.length > 1) {
-      results = await searchNotionDB(URATORI_DB_ID, keywords[1]);
+    // 初回 or 通常の追加質問：保持データをそのまま使う
+    } else if (supplierAllResults.length > 0) {
+      messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">💬 回答を生成中...</div></div>';
+      // 保持済みデータの先頭15件をそのまま使う（再検索しない）
+      notionContext = supplierAllResults.slice(0, supplierShownCount).map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
+
+    // 初回検索
+    } else {
+      messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">🔍 裏取りDBを検索中...</div></div>';
+      var keywords = extractKeywords(question);
+      var primaryKeyword = keywords[0] || '';
+      var results = await searchNotionDB(URATORI_DB_ID, primaryKeyword);
+      if (results.length === 0 && keywords.length > 1) {
+        results = await searchNotionDB(URATORI_DB_ID, keywords[1]);
+      }
+      supplierAllResults = results;  // 全件保持
+      var firstItems = results.slice(0, SUPPLIER_PAGE_SIZE);
+      supplierShownCount = firstItems.length;
+      notionContext = firstItems.map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
+      if (!notionContext) notionContext = 'データが見つかりませんでした';
     }
-
-    var allData = results.slice(0, 15).map(function(r) { return pageToText(r, 'uratori'); });
-    var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
 
     var res = await fetch(WORKER_URL + '/gemini/supplier', {
       method: 'POST',
@@ -307,7 +348,11 @@ async function sendSupplier() {
     if (supplierHistory.length > 20) supplierHistory = supplierHistory.slice(-20);
 
     document.getElementById(loadingId).remove();
-    messages.innerHTML += '<div class="message ai"><div class="bubble">' + formatAnswer(answer) + '</div></div>';
+    // 残件数を表示
+    var remaining = supplierAllResults.length - supplierShownCount;
+    var remainingMsg = remaining > 0 ? '\n\n（他に' + remaining + '件のデータがあります。「もっと見せて」と入力してください）' : '';
+    messages.innerHTML += '<div class="message ai"><div class="bubble">' + formatAnswer(answer) + remainingMsg + '</div></div>';
+
   } catch (e) {
     document.getElementById(loadingId).remove();
     messages.innerHTML += '<div class="message ai"><div class="bubble">エラー: ' + e.message + '</div></div>';
