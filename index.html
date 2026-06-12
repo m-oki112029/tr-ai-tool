@@ -112,12 +112,26 @@ function showPanel(id, btn) {
   btn.classList.add('active');
 }
 
-function extractKeyword(question) {
-  var kw = question.replace(/[？?！!。、「」『』]/g, ' ');
-  kw = kw.replace(/決定商品|裏取り|データベース|から|最近|情報|出して|教えて|ください|について|とは|どこ|いくら|どんな|の|は|を|に|で|が|と|まで/g, ' ');
-  var words = kw.trim().split(/\s+/).filter(function(w) { return w.length >= 1; });
-  return words[0] || '';
+// ▼▼▼ ここが今回の修正ポイント ▼▼▼
+function extractKeywords(question) {
+  // 数字・単位・助詞・動詞などを除去
+  var kw = question
+    .replace(/[０-９0-9]+/g, ' ')           // 数字を除去（1000, １０００など）
+    .replace(/[ヶヵ個枚本冊セット点式台台件]/g, ' ')  // 数量の単位を除去
+    .replace(/程度|以上|以下|以内|くらい|ぐらい/g, ' ') // 曖昧な数量表現を除去
+    .replace(/[？?！!。、「」『』・]/g, ' ')   // 句読点・記号を除去
+    .replace(/決定商品|裏取り|データベース/g, ' ')
+    .replace(/から|最近|情報|出して|教えて|ください|について|とは|どこ|いくら|どんな/g, ' ')
+    .replace(/仕入れ|仕入|コスト|単価|価格|金額|費用/g, ' ') // 価格系の言葉を除去（商品名だけ残す）
+    .replace(/の|は|を|に|で|が|と|まで|も|や/g, ' ');
+
+  // 空白で分割して2文字以上の単語だけ残す
+  var words = kw.trim().split(/\s+/).filter(function(w) { return w.length >= 2; });
+
+  // 重複を除去して返す
+  return [...new Set(words)];
 }
+// ▲▲▲ 修正ここまで ▲▲▲
 
 async function searchNotionDB(dbId, kw) {
   try {
@@ -159,18 +173,37 @@ async function sendChat() {
   if (!question) return;
   var messages = document.getElementById('chatMessages');
   var sendBtn = document.getElementById('sendBtn');
+
   messages.innerHTML += '<div class="message user"><div class="bubble">' + question + '</div></div>';
   input.value = '';
   sendBtn.disabled = true;
+
   var loadingId = 'loading-' + Date.now();
   messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">🔍 DBを検索中...</div></div>';
   messages.scrollTop = messages.scrollHeight;
+
   try {
-    var mainKeyword = extractKeyword(question);
+    // ▼▼▼ ここも修正：キーワードを複数使って検索 ▼▼▼
+    var keywords = extractKeywords(question);
+    var primaryKeyword = keywords[0] || '';
+
+    // 1回目：メインキーワードで検索
     var results = await Promise.all([
-      searchNotionDB(KETTEI_DB_ID, mainKeyword).then(function(r) { return { type: 'kettei', results: r }; }),
-      searchNotionDB(URATORI_DB_ID, mainKeyword).then(function(r) { return { type: 'uratori', results: r }; })
+      searchNotionDB(KETTEI_DB_ID, primaryKeyword).then(function(r) { return { type: 'kettei', results: r }; }),
+      searchNotionDB(URATORI_DB_ID, primaryKeyword).then(function(r) { return { type: 'uratori', results: r }; })
     ]);
+
+    var totalHits = results[0].results.length + results[1].results.length;
+
+    // ヒット0件の場合、2番目のキーワードでリトライ
+    if (totalHits === 0 && keywords.length > 1) {
+      results = await Promise.all([
+        searchNotionDB(KETTEI_DB_ID, keywords[1]).then(function(r) { return { type: 'kettei', results: r }; }),
+        searchNotionDB(URATORI_DB_ID, keywords[1]).then(function(r) { return { type: 'uratori', results: r }; })
+      ]);
+    }
+    // ▲▲▲ 修正ここまで ▲▲▲
+
     var allData = [];
     for (var i = 0; i < results.length; i++) {
       var items = results[i].results.slice(0, 10);
@@ -178,7 +211,9 @@ async function sendChat() {
         allData.push(pageToText(items[j], results[i].type));
       }
     }
+
     var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
+
     var res = await fetch(WORKER_URL + '/gemini/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -186,12 +221,14 @@ async function sendChat() {
     });
     var data = await res.json();
     var answer = data.answer || 'エラーが発生しました。';
+
     document.getElementById(loadingId).remove();
     messages.innerHTML += '<div class="message ai"><div class="bubble">' + answer + '</div></div>';
   } catch (e) {
     document.getElementById(loadingId).remove();
     messages.innerHTML += '<div class="message ai"><div class="bubble">エラー: ' + e.message + '</div></div>';
   }
+
   sendBtn.disabled = false;
   messages.scrollTop = messages.scrollHeight;
 }
