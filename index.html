@@ -105,6 +105,9 @@ const WORKER_URL = "https://tr-notion-proxy.osk-trans52.workers.dev";
 const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
 const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
 
+// 会話履歴を保持する配列（最大10往復まで）
+var chatHistory = [];
+
 function showPanel(id, btn) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.menu-btn').forEach(b => b.classList.remove('active'));
@@ -217,10 +220,15 @@ async function sendChat() {
     var res = await fetch(WORKER_URL + '/gemini/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: question, notionContext: notionContext })
+      body: JSON.stringify({ question: question, notionContext: notionContext, history: chatHistory })
     });
     var data = await res.json();
     var answer = data.answer || 'エラーが発生しました。';
+
+    // 会話履歴に追加（最大10往復＝20件まで保持）
+    chatHistory.push({ role: 'user', content: question });
+    chatHistory.push({ role: 'assistant', content: answer });
+    if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
 
     document.getElementById(loadingId).remove();
     messages.innerHTML += '<div class="message ai"><div class="bubble">' + answer + '</div></div>';
