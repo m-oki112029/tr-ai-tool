@@ -187,7 +187,9 @@ function pageToText(page, type) {
     var sup2 = (p['仕入先'] && p['仕入先'].rich_text && p['仕入先'].rich_text[0]) ? p['仕入先'].rich_text[0].text.content : '';
     var cost = (p['仕入単価'] && p['仕入単価'].number) ? p['仕入単価'].number : '';
     var cat2 = (p['商品分類'] && p['商品分類'].select) ? p['商品分類'].select.name : '';
-    return '[仕入情報] 商品名:' + name2 + ' 分類:' + cat2 + ' 仕入先:' + sup2 + ' 仕入単価:' + cost + '円';
+    var qty2 = (p['数量'] && p['数量'].number) ? p['数量'].number : '';
+    var schedule = (p['スケジュール'] && p['スケジュール'].rich_text && p['スケジュール'].rich_text[0]) ? p['スケジュール'].rich_text[0].text.content : '';
+    return '[仕入情報] 商品名:' + name2 + ' 分類:' + cat2 + ' 仕入先:' + sup2 + ' 数量:' + qty2 + '個 仕入単価:' + cost + '円 スケジュール:' + schedule;
   }
 }
 
