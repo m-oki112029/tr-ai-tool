@@ -91,7 +91,17 @@
 
   <div class="panel" id="panel-supplier">
     <h2>🏭 仕入先検索</h2>
-    <div class="coming-soon"><div class="icon">🚧</div><p>近日公開予定です</p></div>
+    <div class="chat-messages" id="supplierMessages">
+      <div class="message ai">
+        <div class="bubble">仕入先を調べたい商品名・仕様を入力してください。裏取りDBから仕入先候補と仕様・コスト情報を出します。
+
+例：「アクリルスタンド」「フェイスタオル 刺繍あり」「エコバッグ 不織布」</div>
+      </div>
+    </div>
+    <div class="input-row">
+      <input type="text" id="supplierInput" placeholder="商品名・仕様を入力してください..." onkeydown="if(event.key==='Enter')sendSupplier()" />
+      <button onclick="sendSupplier()" id="supplierBtn">検索</button>
+    </div>
   </div>
 
   <div class="panel" id="panel-report">
@@ -248,6 +258,62 @@ async function sendChat() {
   }
 
   sendBtn.disabled = false;
+  messages.scrollTop = messages.scrollHeight;
+}
+
+// 仕入先検索の会話履歴（一問一答とは別に管理）
+var supplierHistory = [];
+
+async function sendSupplier() {
+  var input = document.getElementById('supplierInput');
+  var question = input.value.trim();
+  if (!question) return;
+  var messages = document.getElementById('supplierMessages');
+  var btn = document.getElementById('supplierBtn');
+
+  messages.innerHTML += '<div class="message user"><div class="bubble">' + question + '</div></div>';
+  input.value = '';
+  btn.disabled = true;
+
+  var loadingId = 'loading-' + Date.now();
+  messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">🔍 裏取りDBを検索中...</div></div>';
+  messages.scrollTop = messages.scrollHeight;
+
+  try {
+    var keywords = extractKeywords(question);
+    var primaryKeyword = keywords[0] || '';
+
+    // 裏取りDBのみ検索
+    var results = await searchNotionDB(URATORI_DB_ID, primaryKeyword);
+
+    // ヒット0件なら2番目のキーワードでリトライ
+    if (results.length === 0 && keywords.length > 1) {
+      results = await searchNotionDB(URATORI_DB_ID, keywords[1]);
+    }
+
+    var allData = results.slice(0, 15).map(function(r) { return pageToText(r, 'uratori'); });
+    var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
+
+    var res = await fetch(WORKER_URL + '/gemini/supplier', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: question, notionContext: notionContext, history: supplierHistory })
+    });
+    var data = await res.json();
+    var answer = data.answer || 'エラーが発生しました。';
+
+    supplierHistory.push({ role: 'user', content: question });
+    supplierHistory.push({ role: 'assistant', content: answer });
+    if (supplierHistory.length > 20) supplierHistory = supplierHistory.slice(-20);
+
+    document.getElementById(loadingId).remove();
+    messages.innerHTML += '<div class="message ai"><div class="bubble">' + formatAnswer(answer) + '</div></div>';
+  } catch (e) {
+    document.getElementById(loadingId).remove();
+    messages.innerHTML += '<div class="message ai"><div class="bubble">エラー: ' + e.message + '</div></div>';
+  }
+
+  btn.disabled = false;
   messages.scrollTop = messages.scrollHeight;
 }
 </script>
