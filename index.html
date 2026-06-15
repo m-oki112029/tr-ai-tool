@@ -37,6 +37,22 @@
   .coming-soon { text-align: center; padding: 40px 20px; color: #999; }
   .coming-soon .icon { font-size: 48px; margin-bottom: 12px; }
   .coming-soon p { font-size: 14px; }
+  .form-section { margin-bottom: 16px; }
+  .form-section label { display: block; font-size: 13px; font-weight: bold; color: #1a3a5c; margin-bottom: 6px; }
+  .form-row { display: flex; align-items: center; gap: 8px; }
+  .form-row input[type="number"] { width: 100px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; }
+  .form-row input[type="number"]:focus { border-color: #1a3a5c; }
+  .form-row span { font-size: 13px; color: #666; }
+  .form-section textarea { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; resize: vertical; min-height: 80px; font-family: inherit; }
+  .form-section textarea:focus { border-color: #1a3a5c; }
+  .suggest-results { margin-top: 16px; border: 1px solid #eee; border-radius: 8px; padding: 16px; background: #fafafa; min-height: 100px; font-size: 14px; line-height: 1.8; white-space: pre-wrap; display: none; }
+  .suggest-results.active { display: block; }
+  .form-btn-row { display: flex; gap: 8px; margin-top: 8px; }
+  .form-btn-row button { padding: 10px 24px; background: #1a3a5c; color: white; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  .form-btn-row button:hover { background: #2a5a8c; }
+  .form-btn-row button:disabled { background: #999; cursor: not-allowed; }
+  .form-btn-row .reset-btn { background: #888; }
+  .form-btn-row .reset-btn:hover { background: #666; }
 </style>
 </head>
 <body>
@@ -86,7 +102,38 @@
 
   <div class="panel" id="panel-suggest">
     <h2>✨ アイテム提案</h2>
-    <div class="coming-soon"><div class="icon">🚧</div><p>近日公開予定です</p></div>
+
+    <div class="form-section">
+      <label>仕入単価（円）</label>
+      <div class="form-row">
+        <input type="number" id="suggestCostMin" placeholder="下限" min="0" />
+        <span>〜</span>
+        <input type="number" id="suggestCostMax" placeholder="上限" min="0" />
+        <span>円</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <label>数量（個）</label>
+      <div class="form-row">
+        <input type="number" id="suggestQtyMin" placeholder="下限" min="0" />
+        <span>〜</span>
+        <input type="number" id="suggestQtyMax" placeholder="上限" min="0" />
+        <span>個</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <label>テーマ・条件</label>
+      <textarea id="suggestTheme" placeholder="ターゲット・季節感・用途・企画テーマなどを入力&#10;例：夏向けのノベルティ、アニメイベントのグッズ、エコ意識高い企業向け、30代女性向け"></textarea>
+    </div>
+
+    <div class="form-btn-row">
+      <button onclick="sendSuggest()" id="suggestBtn">提案を出す</button>
+      <button onclick="resetSuggest()" class="reset-btn">リセット</button>
+    </div>
+
+    <div class="suggest-results" id="suggestResults"></div>
   </div>
 
   <div class="panel" id="panel-supplier">
@@ -362,6 +409,99 @@ async function sendSupplier() {
 
   btn.disabled = false;
   messages.scrollTop = messages.scrollHeight;
+}
+
+// アイテム提案
+function resetSuggest() {
+  document.getElementById('suggestCostMin').value = '';
+  document.getElementById('suggestCostMax').value = '';
+  document.getElementById('suggestQtyMin').value = '';
+  document.getElementById('suggestQtyMax').value = '';
+  document.getElementById('suggestTheme').value = '';
+  var results = document.getElementById('suggestResults');
+  results.classList.remove('active');
+  results.innerHTML = '';
+}
+
+async function sendSuggest() {
+  var costMin = document.getElementById('suggestCostMin').value;
+  var costMax = document.getElementById('suggestCostMax').value;
+  var qtyMin = document.getElementById('suggestQtyMin').value;
+  var qtyMax = document.getElementById('suggestQtyMax').value;
+  var theme = document.getElementById('suggestTheme').value.trim();
+
+  // 最低1つは入力チェック
+  if (!costMin && !costMax && !qtyMin && !qtyMax && !theme) {
+    alert('条件を1つ以上入力してください。');
+    return;
+  }
+
+  var btn = document.getElementById('suggestBtn');
+  var results = document.getElementById('suggestResults');
+  btn.disabled = true;
+  results.classList.add('active');
+  results.innerHTML = '🔍 DBを検索中...';
+
+  // 条件を自然言語でまとめる
+  var conditions = [];
+  if (costMin && costMax) conditions.push('仕入単価' + costMin + '円〜' + costMax + '円');
+  else if (costMin) conditions.push('仕入単価' + costMin + '円以上');
+  else if (costMax) conditions.push('仕入単価' + costMax + '円以下');
+  if (qtyMin && qtyMax) conditions.push('数量' + qtyMin + '個〜' + qtyMax + '個');
+  else if (qtyMin) conditions.push('数量' + qtyMin + '個以上');
+  else if (qtyMax) conditions.push('数量' + qtyMax + '個以下');
+  if (theme) conditions.push('テーマ・条件：' + theme);
+  var conditionText = conditions.join('、');
+
+  try {
+    // テーマからキーワードを抽出してDB検索
+    var keywords = theme ? extractKeywords(theme) : [];
+    var primaryKeyword = keywords[0] || '';
+
+    // 両DBを検索
+    var ketteiResults = await searchNotionDB(KETTEI_DB_ID, primaryKeyword);
+    var uratoriResults = await searchNotionDB(URATORI_DB_ID, primaryKeyword);
+
+    var allData = [];
+    ketteiResults.slice(0, 15).forEach(function(r) { allData.push(pageToText(r, 'kettei')); });
+    uratoriResults.slice(0, 15).forEach(function(r) { allData.push(pageToText(r, 'uratori')); });
+
+    // 数値フィルタ（コスト・数量）をJS側で適用
+    if (costMin || costMax || qtyMin || qtyMax) {
+      allData = allData.filter(function(text) {
+        // コストフィルタ
+        var costMatch = text.match(/仕入単価:(\d+(\.\d+)?)/);
+        var cost = costMatch ? parseFloat(costMatch[1]) : null;
+        if (cost !== null) {
+          if (costMin && cost < parseFloat(costMin)) return false;
+          if (costMax && cost > parseFloat(costMax)) return false;
+        }
+        // 数量フィルタ
+        var qtyMatch = text.match(/数量:(\d+)/);
+        var qty = qtyMatch ? parseInt(qtyMatch[1]) : null;
+        if (qty !== null) {
+          if (qtyMin && qty < parseInt(qtyMin)) return false;
+          if (qtyMax && qty > parseInt(qtyMax)) return false;
+        }
+        return true;
+      });
+    }
+
+    var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
+
+    var res = await fetch(WORKER_URL + '/gemini/suggest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conditions: conditionText, notionContext: notionContext })
+    });
+    var data = await res.json();
+    results.innerHTML = formatAnswer(data.answer || 'エラーが発生しました。');
+
+  } catch (e) {
+    results.innerHTML = 'エラー: ' + e.message;
+  }
+
+  btn.disabled = false;
 }
 </script>
 </body>
