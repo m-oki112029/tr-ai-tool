@@ -235,12 +235,19 @@ function extractKeywords(question) {
 }
 // ▲▲▲ 修正ここまで ▲▲▲
 
-async function searchNotionDB(dbId, kw) {
+async function searchNotionDB(dbId, kw, opts) {
+  // opts = { cost_min, cost_max, qty_min, qty_max }
+  opts = opts || {};
   try {
+    var body = { database_id: dbId, keyword: kw };
+    if (opts.cost_min !== undefined) body.cost_min = opts.cost_min;
+    if (opts.cost_max !== undefined) body.cost_max = opts.cost_max;
+    if (opts.qty_min !== undefined) body.qty_min = opts.qty_min;
+    if (opts.qty_max !== undefined) body.qty_max = opts.qty_max;
     var response = await fetch(WORKER_URL + '/notion/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ database_id: dbId, keyword: kw })
+      body: JSON.stringify(body)
     });
     var data = await response.json();
     return data.results || [];
@@ -485,40 +492,23 @@ async function sendSuggest() {
   var conditionText = conditions.join('、');
 
   try {
-    // テーマからキーワードを抽出してDB検索
-    var keywords = theme ? extractKeywords(theme) : [];
-    var primaryKeyword = keywords[0] || '';
+    // 数値条件でWorker側フィルター（Notion APIレベルで絞り込む）
+    var numOpts = {};
+    if (costMin) numOpts.cost_min = parseFloat(costMin);
+    if (costMax) numOpts.cost_max = parseFloat(costMax);
+    if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
+    if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
 
-    // 両DBを検索
-    var ketteiResults = await searchNotionDB(KETTEI_DB_ID, primaryKeyword);
-    var uratoriResults = await searchNotionDB(URATORI_DB_ID, primaryKeyword);
+    // 両DBを数値条件で検索（キーワードなし→商品名縛りなし）
+    var ketteiResults = await searchNotionDB(KETTEI_DB_ID, '', numOpts);
+    var uratoriResults = await searchNotionDB(URATORI_DB_ID, '', numOpts);
 
-    var allData = [];
-    ketteiResults.slice(0, 15).forEach(function(r) { allData.push(pageToText(r, 'kettei')); });
-    uratoriResults.slice(0, 15).forEach(function(r) { allData.push(pageToText(r, 'uratori')); });
+    // 全件保持・先頭30件をGeminiに渡す
+    var allKettei = ketteiResults.map(function(r) { return pageToText(r, 'kettei'); });
+    var allUratori = uratoriResults.map(function(r) { return pageToText(r, 'uratori'); });
+    var allData = allKettei.concat(allUratori);
 
-    // 数値フィルタ（コスト・数量）をJS側で適用
-    if (costMin || costMax || qtyMin || qtyMax) {
-      allData = allData.filter(function(text) {
-        // コストフィルタ
-        var costMatch = text.match(/仕入単価:(\d+(\.\d+)?)/);
-        var cost = costMatch ? parseFloat(costMatch[1]) : null;
-        if (cost !== null) {
-          if (costMin && cost < parseFloat(costMin)) return false;
-          if (costMax && cost > parseFloat(costMax)) return false;
-        }
-        // 数量フィルタ
-        var qtyMatch = text.match(/数量:(\d+)/);
-        var qty = qtyMatch ? parseInt(qtyMatch[1]) : null;
-        if (qty !== null) {
-          if (qtyMin && qty < parseInt(qtyMin)) return false;
-          if (qtyMax && qty > parseInt(qtyMax)) return false;
-        }
-        return true;
-      });
-    }
-
-    var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
+    var notionContext = allData.length > 0 ? allData.slice(0, 30).join('\n') : 'データが見つかりませんでした';
 
     var res = await fetch(WORKER_URL + '/gemini/suggest', {
       method: 'POST',
@@ -577,29 +567,20 @@ async function sendReport() {
   var conditionText = conditions.join('、');
 
   try {
-    // テーマからキーワード抽出して決定商品DBを検索
+    // 数値条件でWorker側フィルター
+    var numOpts = {};
+    if (priceMin) numOpts.cost_min = parseFloat(priceMin);
+    if (priceMax) numOpts.cost_max = parseFloat(priceMax);
+    if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
+    if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
+
+    // テーマからキーワード抽出（商品ジャンル絞り込み用）
     var keywords = theme ? extractKeywords(theme) : [];
     var primaryKeyword = keywords[0] || '';
 
-    var ketteiResults = await searchNotionDB(KETTEI_DB_ID, primaryKeyword);
-
-    // 数値フィルタ（売単価・数量）をJS側で適用
-    var filtered = ketteiResults.filter(function(page) {
-      var p = page.properties;
-      var price = (p['売単価'] && p['売単価'].number) ? p['売単価'].number : null;
-      var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : null;
-      if (price !== null) {
-        if (priceMin && price < parseFloat(priceMin)) return false;
-        if (priceMax && price > parseFloat(priceMax)) return false;
-      }
-      if (qty !== null) {
-        if (qtyMin && qty < parseInt(qtyMin)) return false;
-        if (qtyMax && qty > parseInt(qtyMax)) return false;
-      }
-      return true;
-    });
-
-    var allData = filtered.slice(0, 20).map(function(r) { return pageToText(r, 'kettei'); });
+    // 決定商品DBを数値条件＋キーワードで検索
+    var ketteiResults = await searchNotionDB(KETTEI_DB_ID, primaryKeyword, numOpts);
+    var allData = ketteiResults.slice(0, 30).map(function(r) { return pageToText(r, 'kettei'); });
     var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
 
     var res = await fetch(WORKER_URL + '/gemini/report', {
