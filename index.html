@@ -129,7 +129,8 @@
     </div>
 
     <div class="form-btn-row">
-      <button onclick="sendSuggest()" id="suggestBtn">提案を出す</button>
+      <button onclick="sendSuggest('search')" id="suggestSearchBtn">条件で絞り込む</button>
+      <button onclick="sendSuggest('idea')" id="suggestIdeaBtn">アイデアを出す</button>
       <button onclick="resetSuggest()" class="reset-btn">リセット</button>
     </div>
 
@@ -461,26 +462,32 @@ function resetSuggest() {
   results.innerHTML = '';
 }
 
-async function sendSuggest() {
+// アイテム提案の状態管理
+var suggestAllData = [];   // 全件保持
+var suggestShownCount = 0; // 現在Geminiに渡した件数
+var SUGGEST_PAGE_SIZE = 30;
+
+async function sendSuggest(mode) {
   var costMin = document.getElementById('suggestCostMin').value;
   var costMax = document.getElementById('suggestCostMax').value;
   var qtyMin = document.getElementById('suggestQtyMin').value;
   var qtyMax = document.getElementById('suggestQtyMax').value;
   var theme = document.getElementById('suggestTheme').value.trim();
 
-  // 最低1つは入力チェック
   if (!costMin && !costMax && !qtyMin && !qtyMax && !theme) {
     alert('条件を1つ以上入力してください。');
     return;
   }
 
-  var btn = document.getElementById('suggestBtn');
+  var searchBtn = document.getElementById('suggestSearchBtn');
+  var ideaBtn = document.getElementById('suggestIdeaBtn');
   var results = document.getElementById('suggestResults');
-  btn.disabled = true;
+  searchBtn.disabled = true;
+  ideaBtn.disabled = true;
   results.classList.add('active');
   results.innerHTML = '🔍 DBを検索中...';
 
-  // 条件を自然言語でまとめる
+  // 条件テキスト生成
   var conditions = [];
   if (costMin && costMax) conditions.push('仕入単価' + costMin + '円〜' + costMax + '円');
   else if (costMin) conditions.push('仕入単価' + costMin + '円以上');
@@ -492,37 +499,43 @@ async function sendSuggest() {
   var conditionText = conditions.join('、');
 
   try {
-    // 数値条件でWorker側フィルター（Notion APIレベルで絞り込む）
+    // 数値条件でNotion側フィルター
     var numOpts = {};
     if (costMin) numOpts.cost_min = parseFloat(costMin);
     if (costMax) numOpts.cost_max = parseFloat(costMax);
     if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
     if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
 
-    // 両DBを数値条件で検索（キーワードなし→商品名縛りなし）
+    // 両DBを検索・全件保持
     var ketteiResults = await searchNotionDB(KETTEI_DB_ID, '', numOpts);
     var uratoriResults = await searchNotionDB(URATORI_DB_ID, '', numOpts);
 
-    // 全件保持・先頭30件をGeminiに渡す
-    var allKettei = ketteiResults.map(function(r) { return pageToText(r, 'kettei'); });
-    var allUratori = uratoriResults.map(function(r) { return pageToText(r, 'uratori'); });
-    var allData = allKettei.concat(allUratori);
+    suggestAllData = [];
+    uratoriResults.forEach(function(r) { suggestAllData.push({ text: pageToText(r, 'uratori'), src: '裏取りDB' }); });
+    ketteiResults.forEach(function(r) { suggestAllData.push({ text: pageToText(r, 'kettei'), src: '決定商品DB' }); });
+    suggestShownCount = Math.min(SUGGEST_PAGE_SIZE, suggestAllData.length);
 
-    var notionContext = allData.length > 0 ? allData.slice(0, 30).join('\n') : 'データが見つかりませんでした';
+    var notionContext = suggestAllData.slice(0, suggestShownCount)
+      .map(function(d) { return '[' + d.src + '] ' + d.text; }).join('\n');
+    if (!notionContext) notionContext = 'データが見つかりませんでした';
 
     var res = await fetch(WORKER_URL + '/gemini/suggest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conditions: conditionText, notionContext: notionContext })
+      body: JSON.stringify({ conditions: conditionText, notionContext: notionContext, mode: mode })
     });
     var data = await res.json();
-    results.innerHTML = formatAnswer(data.answer || 'エラーが発生しました。');
+
+    var remaining = suggestAllData.length - suggestShownCount;
+    var remainingMsg = remaining > 0 ? '\n\n（他に' + remaining + '件あります。「もっと見せて」で追加表示できます）' : '';
+    results.innerHTML = formatAnswer(data.answer || 'エラーが発生しました。') + remainingMsg;
 
   } catch (e) {
     results.innerHTML = 'エラー: ' + e.message;
   }
 
-  btn.disabled = false;
+  searchBtn.disabled = false;
+  ideaBtn.disabled = false;
 }
 
 // 実績を調べる
