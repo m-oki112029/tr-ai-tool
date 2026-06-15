@@ -153,8 +153,39 @@
   </div>
 
   <div class="panel" id="panel-report">
-    <h2>📊 実績資料</h2>
-    <div class="coming-soon"><div class="icon">🚧</div><p>近日公開予定です</p></div>
+    <h2>📊 実績を調べる</h2>
+
+    <div class="form-section">
+      <label>売単価（円）</label>
+      <div class="form-row">
+        <input type="number" id="reportPriceMin" placeholder="下限" min="0" />
+        <span>〜</span>
+        <input type="number" id="reportPriceMax" placeholder="上限" min="0" />
+        <span>円</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <label>数量（個）</label>
+      <div class="form-row">
+        <input type="number" id="reportQtyMin" placeholder="下限" min="0" />
+        <span>〜</span>
+        <input type="number" id="reportQtyMax" placeholder="上限" min="0" />
+        <span>個</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <label>業界・テーマ・条件</label>
+      <textarea id="reportTheme" placeholder="業界・顧客ターゲット・商品ジャンルなどを入力&#10;例：アニメ・ライブグッズ、食品メーカーノベルティ、スポーツ関連、30代女性向け"></textarea>
+    </div>
+
+    <div class="form-btn-row">
+      <button onclick="sendReport()" id="reportBtn">実績を検索</button>
+      <button onclick="resetReport()" class="reset-btn">リセット</button>
+    </div>
+
+    <div class="suggest-results" id="reportResults"></div>
   </div>
 </div>
 
@@ -490,6 +521,88 @@ async function sendSuggest() {
     var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
 
     var res = await fetch(WORKER_URL + '/gemini/suggest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conditions: conditionText, notionContext: notionContext })
+    });
+    var data = await res.json();
+    results.innerHTML = formatAnswer(data.answer || 'エラーが発生しました。');
+
+  } catch (e) {
+    results.innerHTML = 'エラー: ' + e.message;
+  }
+
+  btn.disabled = false;
+}
+
+// 実績を調べる
+function resetReport() {
+  document.getElementById('reportPriceMin').value = '';
+  document.getElementById('reportPriceMax').value = '';
+  document.getElementById('reportQtyMin').value = '';
+  document.getElementById('reportQtyMax').value = '';
+  document.getElementById('reportTheme').value = '';
+  var results = document.getElementById('reportResults');
+  results.classList.remove('active');
+  results.innerHTML = '';
+}
+
+async function sendReport() {
+  var priceMin = document.getElementById('reportPriceMin').value;
+  var priceMax = document.getElementById('reportPriceMax').value;
+  var qtyMin = document.getElementById('reportQtyMin').value;
+  var qtyMax = document.getElementById('reportQtyMax').value;
+  var theme = document.getElementById('reportTheme').value.trim();
+
+  if (!priceMin && !priceMax && !qtyMin && !qtyMax && !theme) {
+    alert('条件を1つ以上入力してください。');
+    return;
+  }
+
+  var btn = document.getElementById('reportBtn');
+  var results = document.getElementById('reportResults');
+  btn.disabled = true;
+  results.classList.add('active');
+  results.innerHTML = '🔍 決定商品DBを検索中...';
+
+  // 条件テキスト生成
+  var conditions = [];
+  if (priceMin && priceMax) conditions.push('売単価' + priceMin + '円〜' + priceMax + '円');
+  else if (priceMin) conditions.push('売単価' + priceMin + '円以上');
+  else if (priceMax) conditions.push('売単価' + priceMax + '円以下');
+  if (qtyMin && qtyMax) conditions.push('数量' + qtyMin + '個〜' + qtyMax + '個');
+  else if (qtyMin) conditions.push('数量' + qtyMin + '個以上');
+  else if (qtyMax) conditions.push('数量' + qtyMax + '個以下');
+  if (theme) conditions.push('テーマ・条件：' + theme);
+  var conditionText = conditions.join('、');
+
+  try {
+    // テーマからキーワード抽出して決定商品DBを検索
+    var keywords = theme ? extractKeywords(theme) : [];
+    var primaryKeyword = keywords[0] || '';
+
+    var ketteiResults = await searchNotionDB(KETTEI_DB_ID, primaryKeyword);
+
+    // 数値フィルタ（売単価・数量）をJS側で適用
+    var filtered = ketteiResults.filter(function(page) {
+      var p = page.properties;
+      var price = (p['売単価'] && p['売単価'].number) ? p['売単価'].number : null;
+      var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : null;
+      if (price !== null) {
+        if (priceMin && price < parseFloat(priceMin)) return false;
+        if (priceMax && price > parseFloat(priceMax)) return false;
+      }
+      if (qty !== null) {
+        if (qtyMin && qty < parseInt(qtyMin)) return false;
+        if (qtyMax && qty > parseInt(qtyMax)) return false;
+      }
+      return true;
+    });
+
+    var allData = filtered.slice(0, 20).map(function(r) { return pageToText(r, 'kettei'); });
+    var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
+
+    var res = await fetch(WORKER_URL + '/gemini/report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conditions: conditionText, notionContext: notionContext })
