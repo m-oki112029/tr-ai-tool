@@ -21,7 +21,7 @@
   .panel { background: white; border-radius: 8px; padding: 20px; display: none; }
   .panel.active { display: block; }
   .panel h2 { font-size: 16px; font-weight: bold; color: #1a3a5c; margin-bottom: 16px; border-bottom: 2px solid #eef3f8; padding-bottom: 8px; }
-  .chat-messages { height: 400px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 16px; margin-bottom: 12px; background: #fafafa; }
+  .chat-messages { height: 280px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 16px; margin-bottom: 12px; background: #fafafa; }
   .message { margin-bottom: 12px; }
   .message.user { text-align: right; }
   .message.ai { text-align: left; }
@@ -40,7 +40,9 @@
   .form-section { margin-bottom: 16px; }
   .form-section label { display: block; font-size: 13px; font-weight: bold; color: #1a3a5c; margin-bottom: 6px; }
   .form-row { display: flex; align-items: center; gap: 8px; }
-  .form-row input[type="number"] { width: 100px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; }
+  .form-row input[type="number"] { width: 100px; padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; -moz-appearance: textfield; }
+  .form-row input[type="number"]::-webkit-outer-spin-button,
+  .form-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   .form-row input[type="number"]:focus { border-color: #1a3a5c; }
   .form-row span { font-size: 13px; color: #666; }
   .form-section textarea { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; resize: vertical; min-height: 80px; font-family: inherit; }
@@ -59,7 +61,7 @@
 <div class="container">
   <header>
     <h1>TR大阪 AI提案ツール</h1>
-    <p>過去実績DBをもとにアイテム提案・仕入先検索を自動化します</p>
+    <p>各種データベースをもとにアイテム提案・仕入先検索を自動化します</p>
   </header>
 
   <div class="menu-grid">
@@ -76,12 +78,12 @@
     <button class="menu-btn" onclick="showPanel('supplier', this)">
       <div class="icon">🏭</div>
       <h3>仕入先検索</h3>
-      <p>商品カテゴリから仕入先と概算を検索</p>
+      <p>商品名や仕様から仕入先を検索</p>
     </button>
     <button class="menu-btn" onclick="showPanel('report', this)">
       <div class="icon">📊</div>
       <h3>実績資料</h3>
-      <p>直近の決定商品データをまとめる</p>
+      <p>条件をもとに決定商品データをまとめる</p>
     </button>
   </div>
 
@@ -89,9 +91,14 @@
     <h2>💬 一問一答</h2>
     <div class="chat-messages" id="chatMessages">
       <div class="message ai">
-        <div class="bubble">こんにちは！過去の実績DBをもとに質問に答えます。商品の価格感、仕入先、実績件数など気軽に聞いてください。
+        <div class="bubble">こんにちは！過去の裏取りDB・実績DBをもとに質問に答えます。
+商品名をもとに、価格感、仕入先、目安納期など気軽に聞いてください。
 
-例：「タオルの仕入先と売単価は？」「アクリルスタンドの実績は？」「エコバッグの粗利率は？」</div>
+例：「タオルを300ヶで作れる仕入先教えて？」
+　　「アクリルスタンド1,000ヶのざっくりコストは？」
+　　「エコバッグ3,000ヶの納期、どれくらいかかる？」
+　　「ボトルの実績情報を教えて？」
+　※予算・数量条件で商品を探したい場合は「アイテム提案」タブへ</div>
       </div>
     </div>
     <div class="input-row">
@@ -123,15 +130,18 @@
       </div>
     </div>
 
-    <div class="form-section">
+    <div class="form-btn-row">
+      <button onclick="sendSuggest('search')" id="suggestSearchBtn">裏取りDBを条件で絞り込む</button>
+      <button onclick="resetSuggest()" class="reset-btn" style="margin-left:auto;">リセット</button>
+    </div>
+
+    <div class="form-section" style="margin-top:16px;">
       <label>テーマ・条件</label>
       <textarea id="suggestTheme" placeholder="ターゲット・季節感・用途・企画テーマなどを入力&#10;例：夏向けのノベルティ、アニメイベントのグッズ、エコ意識高い企業向け、30代女性向け"></textarea>
     </div>
 
     <div class="form-btn-row">
-      <button onclick="sendSuggest('search')" id="suggestSearchBtn">条件で絞り込む</button>
-      <button onclick="sendSuggest('idea')" id="suggestIdeaBtn">アイデアを出す</button>
-      <button onclick="resetSuggest()" class="reset-btn">リセット</button>
+      <button onclick="sendSuggest('idea')" id="suggestIdeaBtn">予算・テーマをもとにアイテム案を出す</button>
     </div>
 
     <div class="suggest-results" id="suggestResults"></div>
@@ -141,9 +151,9 @@
     <h2>🏭 仕入先検索</h2>
     <div class="chat-messages" id="supplierMessages">
       <div class="message ai">
-        <div class="bubble">仕入先を調べたい商品名・仕様を入力してください。裏取りDBから仕入先候補と仕様・コスト情報を出します。
+        <div class="bubble">仕入先を調べたい商品名・仕様を入力してください。裏取りDBから仕入先候補とコスト情報を出します。
 
-例：「アクリルスタンド」「フェイスタオル 刺繍あり」「エコバッグ 不織布」</div>
+例：「アクリルスタンドの仕入先は？」「フェイスタオル 100枚で作れる仕入先」「エコバッグ 不織布」</div>
       </div>
     </div>
     <div class="input-row">
@@ -157,7 +167,7 @@
     <h2>📊 実績を調べる</h2>
 
     <div class="form-section">
-      <label>売単価（円）</label>
+      <label>仕入単価（円）</label>
       <div class="form-row">
         <input type="number" id="reportPriceMin" placeholder="下限" min="0" />
         <span>〜</span>
@@ -506,17 +516,41 @@ async function sendSuggest(mode) {
     if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
     if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
 
-    // 両DBを検索・全件保持
-    var ketteiResults = await searchNotionDB(KETTEI_DB_ID, '', numOpts);
-    var uratoriResults = await searchNotionDB(URATORI_DB_ID, '', numOpts);
+    var rawResults, dbLabel;
+    if (mode === 'search') {
+      // 条件絞り込み：裏取りDBのみ
+      rawResults = await searchNotionDB(URATORI_DB_ID, '', numOpts);
+      dbLabel = '裏取りDB';
+    } else {
+      // アイデア出し：両DB・重複排除して全件渡す
+      var ketteiResults = await searchNotionDB(KETTEI_DB_ID, '', numOpts);
+      var uratoriResults = await searchNotionDB(URATORI_DB_ID, '', numOpts);
+      rawResults = uratoriResults.concat(ketteiResults);
+      dbLabel = null; // 各行にソース付与
+    }
 
-    suggestAllData = [];
-    uratoriResults.forEach(function(r) { suggestAllData.push({ text: pageToText(r, 'uratori'), src: '裏取りDB' }); });
-    ketteiResults.forEach(function(r) { suggestAllData.push({ text: pageToText(r, 'kettei'), src: '決定商品DB' }); });
+    // 商品名重複排除（最小数量の1件のみ残す）
+    var seen = {};
+    var deduped = [];
+    rawResults.forEach(function(r) {
+      var p = r.properties;
+      var nameField = p['商品名'] || p['商材名'];
+      var name = (nameField && nameField.title && nameField.title[0]) ? nameField.title[0].text.content : '';
+      var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : 999999;
+      if (!seen[name] || seen[name].qty > qty) {
+        seen[name] = { page: r, qty: qty, isKettei: !!p['商材名'] };
+      }
+    });
+    Object.keys(seen).forEach(function(name) {
+      var item = seen[name];
+      var src = item.isKettei ? '決定商品DB' : '裏取りDB';
+      deduped.push('[' + src + '] ' + pageToText(item.page, item.isKettei ? 'kettei' : 'uratori'));
+    });
+
+    suggestAllData = deduped;
     suggestShownCount = Math.min(SUGGEST_PAGE_SIZE, suggestAllData.length);
 
-    var notionContext = suggestAllData.slice(0, suggestShownCount)
-      .map(function(d) { return '[' + d.src + '] ' + d.text; }).join('\n');
+    var notionContext = suggestAllData.slice(0, suggestShownCount).join('\n');
     if (!notionContext) notionContext = 'データが見つかりませんでした';
 
     var res = await fetch(WORKER_URL + '/gemini/suggest', {
