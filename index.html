@@ -289,6 +289,24 @@ function pageToText(page, type) {
   }
 }
 
+// 💡 共通の重複排除ヘルパー
+// 同一商品名のページが複数ある場合（数量パターン違いなど）、
+// 数量が一番少ないものだけを残す。全タブ共通で使う。
+// pages: Notionのページ配列、type: 'kettei' or 'uratori'
+function dedupePages(pages, type) {
+  var seen = {};
+  pages.forEach(function(page) {
+    var p = page.properties;
+    var nameField = type === 'kettei' ? p['商材名'] : p['商品名'];
+    var name = (nameField && nameField.title && nameField.title[0]) ? nameField.title[0].text.content : ('__no_name_' + Math.random());
+    var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : 999999999;
+    if (!seen[name] || seen[name].qty > qty) {
+      seen[name] = { page: page, qty: qty };
+    }
+  });
+  return Object.keys(seen).map(function(name) { return seen[name].page; });
+}
+
 async function sendChat() {
   var input = document.getElementById('chatInput');
   var question = input.value.trim();
@@ -328,9 +346,10 @@ async function sendChat() {
 
     var allData = [];
     for (var i = 0; i < results.length; i++) {
-      var items = results[i].results.slice(0, 10);
-      for (var j = 0; j < items.length; j++) {
-        allData.push(pageToText(items[j], results[i].type));
+      // 商品名重複排除（最小数量の1件のみ残す）
+      var deduped = dedupePages(results[i].results, results[i].type).slice(0, 10);
+      for (var j = 0; j < deduped.length; j++) {
+        allData.push(pageToText(deduped[j], results[i].type));
       }
     }
 
@@ -364,7 +383,7 @@ async function sendChat() {
 var supplierHistory = [];      // 会話履歴
 var supplierAllResults = [];   // Notionから取得した全件データ（最大100件）
 var supplierShownCount = 0;    // 現在Geminiに渡した件数
-var SUPPLIER_PAGE_SIZE = 15;   // 1回に渡す件数
+var SUPPLIER_PAGE_SIZE = 25;   // 1回に渡す件数（重複排除後の件数なので増量）
 
 function resetSupplier() {
   supplierHistory = [];
@@ -426,6 +445,8 @@ async function sendSupplier() {
       if (results.length === 0 && keywords.length > 1) {
         results = await searchNotionDB(URATORI_DB_ID, keywords[1]);
       }
+      // 商品名重複排除（同一商品の数量パターンを1件に集約→実質的な仕入先候補数を増やす）
+      results = dedupePages(results, 'uratori');
       supplierAllResults = results;  // 全件保持
       var firstItems = results.slice(0, SUPPLIER_PAGE_SIZE);
       supplierShownCount = firstItems.length;
@@ -516,36 +537,28 @@ async function sendSuggest(mode) {
     if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
     if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
 
-    var rawResults, dbLabel;
+    var rawResults, forcedSrc;
     if (mode === 'search') {
       // 条件絞り込み：裏取りDBのみ
       rawResults = await searchNotionDB(URATORI_DB_ID, '', numOpts);
-      dbLabel = '裏取りDB';
+      forcedSrc = '裏取りDB';
     } else {
-      // アイデア出し：両DB・重複排除して全件渡す
+      // アイデア出し：両DB
       var ketteiResults = await searchNotionDB(KETTEI_DB_ID, '', numOpts);
       var uratoriResults = await searchNotionDB(URATORI_DB_ID, '', numOpts);
       rawResults = uratoriResults.concat(ketteiResults);
-      dbLabel = null; // 各行にソース付与
+      forcedSrc = null; // 各行にソース付与
     }
 
-    // 商品名重複排除（最小数量の1件のみ残す）
-    var seen = {};
-    var deduped = [];
-    rawResults.forEach(function(r) {
-      var p = r.properties;
-      var nameField = p['商品名'] || p['商材名'];
-      var name = (nameField && nameField.title && nameField.title[0]) ? nameField.title[0].text.content : '';
-      var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : 999999;
-      if (!seen[name] || seen[name].qty > qty) {
-        seen[name] = { page: r, qty: qty, isKettei: !!p['商材名'] };
-      }
-    });
-    Object.keys(seen).forEach(function(name) {
-      var item = seen[name];
-      var src = item.isKettei ? '決定商品DB' : '裏取りDB';
-      deduped.push('[' + src + '] ' + pageToText(item.page, item.isKettei ? 'kettei' : 'uratori'));
-    });
+    // 商品名重複排除（最小数量の1件のみ残す）※共通ヘルパー使用
+    var ketteiSubset = rawResults.filter(function(r) { return !!r.properties['商材名']; });
+    var uratoriSubset = rawResults.filter(function(r) { return !r.properties['商材名']; });
+    var deduped = dedupePages(ketteiSubset, 'kettei').concat(dedupePages(uratoriSubset, 'uratori'))
+      .map(function(page) {
+        var isKettei = !!page.properties['商材名'];
+        var src = forcedSrc || (isKettei ? '決定商品DB' : '裏取りDB');
+        return '[' + src + '] ' + pageToText(page, isKettei ? 'kettei' : 'uratori');
+      });
 
     suggestAllData = deduped;
     suggestShownCount = Math.min(SUGGEST_PAGE_SIZE, suggestAllData.length);
@@ -627,6 +640,8 @@ async function sendReport() {
 
     // 決定商品DBを数値条件＋キーワードで検索
     var ketteiResults = await searchNotionDB(KETTEI_DB_ID, primaryKeyword, numOpts);
+    // 商品名重複排除（最小数量の1件のみ残す）
+    ketteiResults = dedupePages(ketteiResults, 'kettei');
     var allData = ketteiResults.slice(0, 30).map(function(r) { return pageToText(r, 'kettei'); });
     var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
 
