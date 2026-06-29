@@ -24,7 +24,7 @@
   .panel { background: white; border-radius: 8px; padding: 20px; display: none; }
   .panel.active { display: block; }
   .panel h2 { font-size: 16px; font-weight: bold; color: #1a3a5c; margin-bottom: 16px; border-bottom: 2px solid #eef3f8; padding-bottom: 8px; }
-  .chat-messages { height: calc(100vh - 420px); min-height: 300px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 16px; margin-bottom: 12px; background: #fafafa; }
+  .chat-messages { height: calc(100vh - 320px); min-height: 400px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 16px; margin-bottom: 12px; background: #fafafa; }
   .message { margin-bottom: 12px; }
   .message.user { text-align: right; }
   .message.ai { text-align: left; }
@@ -165,7 +165,6 @@
     <div class="input-row">
       <input type="text" id="supplierInput" placeholder="商品名・仕様を入力してください..." onkeydown="if(event.key==='Enter')sendSupplier()" />
       <button onclick="sendSupplier()" id="supplierBtn">検索</button>
-      <button onclick="resetSupplier()" id="supplierResetBtn" style="background:#888;">新しく検索</button>
     </div>
   </div>
 
