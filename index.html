@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>TR大阪 AI提案ツール</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -145,6 +148,9 @@
     </div>
 
     <div class="suggest-results" id="suggestResults"></div>
+    <div id="suggestMoreRow" style="display:none;margin-top:8px;">
+      <button onclick="sendSuggestMore()" style="padding:8px 20px;background:#1a3a5c;color:white;border:none;border-radius:8px;font-size:13px;cursor:pointer;">もっと見せて</button>
+    </div>
   </div>
 
   <div class="panel" id="panel-supplier">
@@ -191,12 +197,22 @@
       <textarea id="reportTheme" placeholder="業界・顧客ターゲット・商品ジャンルなどを入力&#10;例：アニメ・ライブグッズ、食品メーカーノベルティ、スポーツ関連、30代女性向け"></textarea>
     </div>
 
+    <div class="form-section">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">
+        <input type="checkbox" id="reportIncludeNG" style="width:16px;height:16px;cursor:pointer;">
+        転載不可商品を含める（チェックなし＝転載OKのみ表示）
+      </label>
+    </div>
+
     <div class="form-btn-row">
       <button onclick="sendReport()" id="reportBtn">実績を検索</button>
       <button onclick="resetReport()" class="reset-btn">リセット</button>
     </div>
 
     <div class="suggest-results" id="reportResults"></div>
+    <div id="reportMoreRow" style="display:none;margin-top:8px;">
+      <button onclick="sendReportMore()" style="padding:8px 20px;background:#1a3a5c;color:white;border:none;border-radius:8px;font-size:13px;cursor:pointer;">もっと見せて</button>
+    </div>
   </div>
 </div>
 
@@ -574,8 +590,14 @@ async function sendSuggest(mode) {
     var data = await res.json();
 
     var remaining = suggestAllData.length - suggestShownCount;
-    var remainingMsg = remaining > 0 ? '\n\n（他に' + remaining + '件あります。「もっと見せて」で追加表示できます）' : '';
-    results.innerHTML = formatAnswer(data.answer || 'エラーが発生しました。') + remainingMsg;
+    results.innerHTML = formatAnswer(data.answer || 'エラーが発生しました。');
+    var moreRow = document.getElementById('suggestMoreRow');
+    if (remaining > 0) {
+      moreRow.style.display = 'block';
+      moreRow.querySelector('button').textContent = 'もっと見せて（他に' + remaining + '件）';
+    } else {
+      moreRow.style.display = 'none';
+    }
 
   } catch (e) {
     results.innerHTML = 'エラー: ' + e.message;
@@ -592,6 +614,7 @@ function resetReport() {
   document.getElementById('reportQtyMin').value = '';
   document.getElementById('reportQtyMax').value = '';
   document.getElementById('reportTheme').value = '';
+  document.getElementById('reportIncludeNG').checked = false;
   var results = document.getElementById('reportResults');
   results.classList.remove('active');
   results.innerHTML = '';
@@ -603,6 +626,7 @@ async function sendReport() {
   var qtyMin = document.getElementById('reportQtyMin').value;
   var qtyMax = document.getElementById('reportQtyMax').value;
   var theme = document.getElementById('reportTheme').value.trim();
+  var includeNG = document.getElementById('reportIncludeNG').checked;
 
   if (!priceMin && !priceMax && !qtyMin && !qtyMax && !theme) {
     alert('条件を1つ以上入力してください。');
@@ -642,22 +666,104 @@ async function sendReport() {
     var ketteiResults = await searchNotionDB(KETTEI_DB_ID, primaryKeyword, numOpts);
     // 商品名重複排除（最小数量の1件のみ残す）
     ketteiResults = dedupePages(ketteiResults, 'kettei');
-    var allData = ketteiResults.slice(0, 30).map(function(r) { return pageToText(r, 'kettei'); });
-    var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
+    // 全件保持・先頭30件をGeminiに渡す
+    reportAllData = ketteiResults.map(function(r) { return pageToText(r, 'kettei'); });
+    reportShownCount = Math.min(REPORT_PAGE_SIZE, reportAllData.length);
+    var notionContext = reportAllData.length > 0 ? reportAllData.slice(0, reportShownCount).join('\n') : 'データが見つかりませんでした';
 
     var res = await fetch(WORKER_URL + '/gemini/report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conditions: conditionText, notionContext: notionContext })
+      body: JSON.stringify({ conditions: conditionText, notionContext: notionContext, includeNG: includeNG })
     });
     var data = await res.json();
     results.innerHTML = formatAnswer(data.answer || 'エラーが発生しました。');
+    var reportRemaining = reportAllData.length - reportShownCount;
+    var reportMoreRow = document.getElementById('reportMoreRow');
+    if (reportRemaining > 0) {
+      reportMoreRow.style.display = 'block';
+      reportMoreRow.querySelector('button').textContent = 'もっと見せて（他に' + reportRemaining + '件）';
+    } else {
+      reportMoreRow.style.display = 'none';
+    }
 
   } catch (e) {
     results.innerHTML = 'エラー: ' + e.message;
   }
 
   btn.disabled = false;
+}
+
+// アイテム提案：「もっと見せて」ボタン処理
+async function sendSuggestMore() {
+  if (suggestAllData.length <= suggestShownCount) return;
+  var results = document.getElementById('suggestResults');
+  var moreRow = document.getElementById('suggestMoreRow');
+  var btn = moreRow.querySelector('button');
+  btn.disabled = true;
+  btn.textContent = '取得中...';
+
+  var nextItems = suggestAllData.slice(suggestShownCount, suggestShownCount + SUGGEST_PAGE_SIZE);
+  suggestShownCount += nextItems.length;
+  var notionContext = nextItems.join('\n');
+
+  try {
+    var res = await fetch(WORKER_URL + '/gemini/suggest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conditions: '追加表示', notionContext: notionContext, mode: 'search' })
+    });
+    var data = await res.json();
+    results.innerHTML += '\n\n' + formatAnswer(data.answer || 'エラーが発生しました。');
+    var remaining = suggestAllData.length - suggestShownCount;
+    if (remaining > 0) {
+      btn.disabled = false;
+      btn.textContent = 'もっと見せて（他に' + remaining + '件）';
+    } else {
+      moreRow.style.display = 'none';
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'もっと見せて';
+  }
+}
+
+// 実績：「もっと見せて」ボタン処理
+var reportAllData = [];
+var reportShownCount = 0;
+var REPORT_PAGE_SIZE = 30;
+
+async function sendReportMore() {
+  if (reportAllData.length <= reportShownCount) return;
+  var results = document.getElementById('reportResults');
+  var moreRow = document.getElementById('reportMoreRow');
+  var btn = moreRow.querySelector('button');
+  btn.disabled = true;
+  btn.textContent = '取得中...';
+
+  var nextItems = reportAllData.slice(reportShownCount, reportShownCount + REPORT_PAGE_SIZE);
+  reportShownCount += nextItems.length;
+  var notionContext = nextItems.join('\n');
+
+  try {
+    var res = await fetch(WORKER_URL + '/gemini/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conditions: '追加表示', notionContext: notionContext, includeNG: false })
+    });
+    var data = await res.json();
+    results.innerHTML += '\n\n' + formatAnswer(data.answer || 'エラーが発生しました。');
+    var remaining = reportAllData.length - reportShownCount;
+    if (remaining > 0) {
+      btn.disabled = false;
+      btn.textContent = 'もっと見せて（他に' + remaining + '件）';
+    } else {
+      moreRow.style.display = 'none';
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'もっと見せて';
+  }
 }
 </script>
 </body>
