@@ -277,8 +277,8 @@ async function generatePptx() {
 async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var { title, date, staffName, staffPhone, staffEmail, items } = params;
   
-  // Base64デコード
-  var binary = atob(fmtB64);
+  // Base64デコード（安全な方法）
+  var binary = atob(fmtB64.replace(/\s/g, ''));
   var bytes = new Uint8Array(binary.length);
   for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   
@@ -1373,8 +1373,8 @@ async function generatePptx() {
 async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var { title, date, staffName, staffPhone, staffEmail, items } = params;
   
-  // Base64デコード
-  var binary = atob(fmtB64);
+  // Base64デコード（安全な方法）
+  var binary = atob(fmtB64.replace(/\s/g, ''));
   var bytes = new Uint8Array(binary.length);
   for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   
