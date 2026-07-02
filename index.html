@@ -462,58 +462,6 @@ function replaceContactInfo(xml, staffName, staffPhone, staffEmail) {
 }
 
 
-// チェックリスト生成
-function buildCheckList(tab) {
-  var rawData = tab === 'suggest' ? suggestAllData : reportAllData;
-  var listId = tab === 'suggest' ? 'suggestCheckList' : 'reportCheckList';
-  var container = document.getElementById(listId);
-  if (!container || rawData.length === 0) return;
-
-  var items = extractItemsFromResults(rawData);
-  if (items.length === 0) { container.style.display = 'none'; return; }
-
-  var html = '<div class="check-list">';
-  html += '<div class="check-list-header">';
-  html += '<span>資料に含める商品を選択してください</span>';
-  html += '<button onclick="toggleAllCheck(\'' + listId + '\', true)">全選択</button>';
-  html += ' / <button onclick="toggleAllCheck(\'' + listId + '\', false)">全解除</button>';
-  html += '</div>';
-
-  items.forEach(function(item, i) {
-    var src = item.isKettei ? '決定商品DB' : '裏取りDB';
-    var priceText = item.cost ? calcRefPrice(item.cost) + '円程度' : '要確認';
-    var qtyText = item.qty ? roundUpQty(item.qty) + '個' : '要確認';
-    html += '<div class="check-item">';
-    html += '<input type="checkbox" id="chk_' + listId + '_' + i + '" checked>';
-    html += '<label for="chk_' + listId + '_' + i + '">';
-    html += '<strong>' + (item.name || '商品名不明') + '</strong>';
-    html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + qtyText + ' / ' + priceText + '）</span>';
-    html += '</label>';
-    html += '</div>';
-  });
-  html += '</div>';
-  container.innerHTML = html;
-  container.style.display = 'block';
-  // データをcontainerに保持
-  container._items = items;
-}
-
-function toggleAllCheck(listId, checked) {
-  var container = document.getElementById(listId);
-  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = checked; });
-}
-
-// 選択されたアイテムを取得
-function getSelectedItems(tab) {
-  var listId = tab === 'suggest' ? 'suggestCheckList' : 'reportCheckList';
-  var container = document.getElementById(listId);
-  if (!container || !container._items) return [];
-  return container._items.filter(function(item, i) {
-    var cb = document.getElementById('chk_' + listId + '_' + i);
-    return cb && cb.checked;
-  });
-}
-
 </script>
 </head>
 <body>
@@ -1600,6 +1548,59 @@ function replaceContactInfo(xml, staffName, staffPhone, staffEmail) {
   xml = replaceText(xml, '090-xxxx-xxxx', staffPhone || '要確認');
   xml = replaceText(xml, 'XXXXXXXXX@trans.co.jp', staffEmail || '要確認');
   return xml;
+}
+
+
+// チェックリスト生成
+function buildCheckList(tab) {
+  var rawData = tab === 'suggest' ? suggestAllData : reportAllData;
+  var listId = tab === 'suggest' ? 'suggestCheckList' : 'reportCheckList';
+  var container = document.getElementById(listId);
+  if (!container || rawData.length === 0) return;
+
+  var items = extractItemsFromResults(rawData);
+  if (items.length === 0) { container.style.display = 'none'; return; }
+
+  var html = '<div class="check-list">';
+  html += '<div class="check-list-header">';
+  html += '<span>資料に含める商品を選択してください</span>';
+  html += '<button onclick="toggleAllCheck(\'' + listId + '\', true)">全選択</button>';
+  html += ' / <button onclick="toggleAllCheck(\'' + listId + '\', false)">全解除</button>';
+  html += '</div>';
+
+  items.forEach(function(item, i) {
+    var src = item.isKettei ? '決定商品DB' : '裏取りDB';
+    var priceText = item.cost ? calcRefPrice(item.cost) + '円程度' : '要確認';
+    var qtyText = item.qty ? roundUpQty(item.qty) + '個' : '要確認';
+    html += '<div class="check-item">';
+    html += '<input type="checkbox" id="chk_' + listId + '_' + i + '" checked>';
+    html += '<label for="chk_' + listId + '_' + i + '">';
+    html += '<strong>' + (item.name || '商品名不明') + '</strong>';
+    html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + qtyText + ' / ' + priceText + '）</span>';
+    html += '</label>';
+    html += '</div>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+  container.style.display = 'block';
+  // データをcontainerに保持
+  container._items = items;
+}
+
+function toggleAllCheck(listId, checked) {
+  var container = document.getElementById(listId);
+  container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = checked; });
+}
+
+// 選択されたアイテムを取得
+function getSelectedItems(tab) {
+  var listId = tab === 'suggest' ? 'suggestCheckList' : 'reportCheckList';
+  var container = document.getElementById(listId);
+  if (!container || !container._items) return [];
+  return container._items.filter(function(item, i) {
+    var cb = document.getElementById('chk_' + listId + '_' + i);
+    return cb && cb.checked;
+  });
 }
 
 </script>
