@@ -273,154 +273,63 @@ async function generatePptx() {
   }
 }
 
-// JSZipでパワポのXMLを書き換える
+// JSZipでパワポのXMLを書き換える（シンプル版：テキスト置換のみ）
 async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var { title, date, staffName, staffPhone, staffEmail, items } = params;
   
-  // Base64デコード（安全な方法）
+  // Base64デコード
   var binary = atob(fmtB64.replace(/\s/g, ''));
   var bytes = new Uint8Array(binary.length);
   for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   
   var zip = await JSZip.loadAsync(bytes);
   
-  // スライド枚数を確認
-  var slideFiles = Object.keys(zip.files).filter(function(f) {
-    return f.match(/ppt\/slides\/slide\d+\.xml$/);
-  }).sort();
+  // スライド1（タイトル）書き換え
+  var s1 = await zip.file('ppt/slides/slide1.xml').async('string');
+  s1 = s1.replace(/>○○アイテム<\/a:t>/, '>' + escapeXml(title) + 'アイテム</a:t>');
+  s1 = s1.replace(/>○○年○月○日<\/a:t>/, '>' + escapeXml(date) + '</a:t>');
+  s1 = s1.replace(/>\{担当者名\}<\/a:t>/, '>' + escapeXml(staffName) + '</a:t>');
+  zip.file('ppt/slides/slide1.xml', s1);
+
+  // コンテンツスライド（slide2 or slide3）書き換え
+  var contentSlide = currentSlideType === '6' ? 'ppt/slides/slide2.xml' : 'ppt/slides/slide3.xml';
+  var removeSlide = currentSlideType === '6' ? 'ppt/slides/slide3.xml' : 'ppt/slides/slide2.xml';
+  var removeRels = currentSlideType === '6' ? 'ppt/slides/_rels/slide3.xml.rels' : 'ppt/slides/_rels/slide2.xml.rels';
   
-  // スライド1（タイトル）を書き換え
-  var slide1Xml = await zip.file('ppt/slides/slide1.xml').async('string');
-  slide1Xml = replaceText(slide1Xml, '○○アイテム', title + 'アイテム');
-  slide1Xml = replaceText(slide1Xml, '○○年○月○日', date);
-  slide1Xml = replaceText(slide1Xml, '{担当者名}', staffName);
-  zip.file('ppt/slides/slide1.xml', slide1Xml);
+  var sc = await zip.file(contentSlide).async('string');
   
-  // スライド2（コンテンツ）・3の書き換え（アイテム情報）
   if (currentSlideType === '6') {
-    // 6枚版：slide2を使いアイテム名を埋める
-    // 必要なスライド数を計算
-    var slideCount = Math.ceil(items.length / 6);
-    var templateSlide = await zip.file('ppt/slides/slide2.xml').async('string');
-    var templateRels = await zip.file('ppt/slides/_rels/slide2.xml.rels').async('string').catch(() => '');
-    
-    for (var s = 0; s < slideCount; s++) {
-      var slideItems = items.slice(s * 6, (s + 1) * 6);
-      var slideXml = templateSlide;
-      
-      // Item 01〜06の商品名と参考価格・数量を埋める
-      var itemNames = [
-        ['TextBox 10', 'TextBox 14', 'TextBox 18', 'TextBox 22', 'TextBox 26', 'TextBox 30']
-      ][0];
-      
-      slideItems.forEach(function(item, idx) {
-        var refPrice = calcRefPrice(item.cost);
-        var refQty = roundUpQty(item.qty);
-        // 実績版は数量と価格も商品名テキストボックスに含める
-        if (currentFmtType === 'jisseki') {
-          slideXml = replaceText(slideXml, '商品名が入ります\n○○ヶ ○○円', 
-            item.name + '\n' + refQty + 'ヶ ' + refPrice + '円');
-        } else {
-          slideXml = replaceText(slideXml, '商品名が入ります', item.name, idx === 0);
-        }
-      });
-      
-      // ページ番号更新（01, 02...）
-      slideXml = replaceText(slideXml, '>01<', '>' + String(s+1).padStart(2,'0') + '<');
-      
-      // ノートに元データを追記
-      var noteInfo = slideItems.map(function(item, idx) {
-        if (item.isKettei) {
-          return 'Item' + String(s*6+idx+1).padStart(2,'0') + ': ' + item.name + 
-            ' / 数量:' + item.qty + '個 / 仕入単価:' + item.cost + '円';
-        } else {
-          return 'Item' + String(s*6+idx+1).padStart(2,'0') + ': ' + item.name + 
-            ' / 数量:' + item.qty + '個 / 仕入単価:' + item.cost + '円 / 仕入先:' + item.supplier;
-        }
-      }).join('\n');
-      
-      // ノートXMLを更新
-      slideXml = addNote(slideXml, noteInfo);
-      
-      if (s === 0) {
-        zip.file('ppt/slides/slide2.xml', slideXml);
-      } else {
-        // 追加スライドをコピー
-        zip.file('ppt/slides/slide' + (s+2) + '.xml', slideXml);
-        // rels追加
-        if (templateRels) zip.file('ppt/slides/_rels/slide' + (s+2) + '.xml.rels', templateRels);
-      }
-    }
-    
-    // 使わないスライド3を削除（2枚版スライド）
-    zip.remove('ppt/slides/slide3.xml');
-    
-    // 最終スライド（まとめ）をslide(slideCount+2)に移動
-    var lastSlide = await zip.file('ppt/slides/slide4.xml').async('string');
-    lastSlide = replaceContactInfo(lastSlide, staffName, staffPhone, staffEmail);
-    zip.file('ppt/slides/slide' + (slideCount + 2) + '.xml', lastSlide);
-    zip.remove('ppt/slides/slide4.xml');
-    
+    // 6枚版：商品名を順番に置換
+    var names6 = ['TextBox 10','TextBox 14','TextBox 18','TextBox 22','TextBox 26','TextBox 30'];
+    items.slice(0,6).forEach(function(item, i) {
+      sc = replaceShapeText(sc, '商品名が入ります', escapeXml(item.name), i);
+    });
   } else {
-    // 2枚版：slide3を使いアイテム情報を埋める
-    var slideCount = Math.ceil(items.length / 2);
-    var templateSlide = await zip.file('ppt/slides/slide3.xml').async('string');
-    var templateRels = await zip.file('ppt/slides/_rels/slide3.xml.rels').async('string').catch(() => '');
-    
-    for (var s = 0; s < slideCount; s++) {
-      var slideItems = items.slice(s * 2, (s + 1) * 2);
-      var slideXml = templateSlide;
-      
-      slideItems.forEach(function(item, idx) {
-        var refPrice = calcRefPrice(item.cost);
-        var refQty = roundUpQty(item.qty);
-        var memo = memoTexts[s * 2 + idx] || '';
-        
-        if (idx === 0) {
-          slideXml = replaceText(slideXml, '商品名が入ります', item.name, true);
-          slideXml = replaceText(slideXml, '○○ヶ　〇〇円程度（参考価格）', refQty + 'ヶ　' + refPrice + '円程度（参考価格）', true);
-          slideXml = replaceText(slideXml, 'このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール。', memo, true);
-        } else {
-          slideXml = replaceText(slideXml, '商品名が入ります', item.name, true);
-          slideXml = replaceText(slideXml, '○○ヶ　〇〇円程度（参考価格）', refQty + 'ヶ　' + refPrice + '円程度（参考価格）', true);
-          slideXml = replaceText(slideXml, 'このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール。', memo, true);
-        }
-      });
-      
-      slideXml = replaceText(slideXml, '>01<', '>' + String(s+1).padStart(2,'0') + '<');
-      
-      // ノートに元データを追記
-      var noteInfo = slideItems.map(function(item, idx) {
-        if (item.isKettei) {
-          return 'Item' + String(s*2+idx+1).padStart(2,'0') + ': ' + item.name + 
-            ' / 数量:' + item.qty + '個 / 仕入単価:' + item.cost + '円';
-        } else {
-          return 'Item' + String(s*2+idx+1).padStart(2,'0') + ': ' + item.name + 
-            ' / 数量:' + item.qty + '個 / 仕入単価:' + item.cost + '円 / 仕入先:' + item.supplier;
-        }
-      }).join('\n');
-      slideXml = addNote(slideXml, noteInfo);
-      
-      if (s === 0) {
-        zip.file('ppt/slides/slide3.xml', slideXml);
-      } else {
-        zip.file('ppt/slides/slide' + (s+3) + '.xml', slideXml);
-        if (templateRels) zip.file('ppt/slides/_rels/slide' + (s+3) + '.xml.rels', templateRels);
+    // 2枚版：商品名・価格・memo
+    items.slice(0,2).forEach(function(item, i) {
+      var refPrice = calcRefPrice(item.cost);
+      var refQty = roundUpQty(item.qty);
+      sc = replaceShapeText(sc, '商品名が入ります', escapeXml(item.name), i);
+      sc = replaceShapeText(sc, '○○ヶ　〇〇円程度（参考価格）', 
+        escapeXml(refQty + 'ヶ　' + refPrice + '円程度（参考価格）'), i);
+      if (memoTexts[i]) {
+        sc = replaceShapeText(sc, 
+          'このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール。',
+          escapeXml(memoTexts[i]), i);
       }
-    }
-    
-    // 使わないスライド2を削除（6枚版スライド）
-    zip.remove('ppt/slides/slide2.xml');
-    
-    // 最終スライドを移動
-    var lastSlide = await zip.file('ppt/slides/slide4.xml').async('string');
-    lastSlide = replaceContactInfo(lastSlide, staffName, staffPhone, staffEmail);
-    zip.file('ppt/slides/slide' + (slideCount + 3) + '.xml', lastSlide);
-    zip.remove('ppt/slides/slide4.xml');
+    });
   }
-  
+  zip.file(contentSlide, sc);
+
+  // 最終スライド（slide4）：連絡先書き換え
+  var s4 = await zip.file('ppt/slides/slide4.xml').async('string');
+  s4 = s4.replace(/>（営業担当）<\/a:t>/, '>（' + escapeXml(staffName) + '）</a:t>');
+  s4 = s4.replace(/>090-xxxx-xxxx<\/a:t>/, '>' + escapeXml(staffPhone || '要確認') + '</a:t>');
+  s4 = s4.replace(/>XXXXXXXXX@trans\.co\.jp<\/a:t>/, '>' + escapeXml(staffEmail || '要確認') + '</a:t>');
+  zip.file('ppt/slides/slide4.xml', s4);
+
   // ダウンロード
-  var blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  var blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
@@ -430,6 +339,18 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// シェイプ内のテキストをn番目の出現で置換
+function replaceShapeText(xml, oldText, newText, occurrence) {
+  var count = 0;
+  var escaped = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  var regex = new RegExp('<a:t>' + escaped + '<\/a:t>');
+  return xml.replace(new RegExp('<a:t>' + escaped + '<\/a:t>', 'g'), function(match) {
+    if (count === occurrence) { count++; return '<a:t>' + newText + '</a:t>'; }
+    count++;
+    return match;
+  });
 }
 
 // テキスト置換ヘルパー（XML内の<a:t>タグのテキストを置換）
