@@ -273,7 +273,7 @@ async function generatePptx() {
   }
 }
 
-// JSZipでパワポのXMLを書き換える（シンプル版：テキスト置換のみ）
+// JSZipでパワポのXMLを書き換える（実際のXML構造に合わせた版）
 async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var { title, date, staffName, staffPhone, staffEmail, items } = params;
   
@@ -285,47 +285,58 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var zip = await JSZip.loadAsync(bytes);
   
   // スライド1（タイトル）書き換え
+  // 実際のXML: <a:t>○○</a:t>...</a:t>アイテム</a:t> と分割されている
   var s1 = await zip.file('ppt/slides/slide1.xml').async('string');
-  s1 = s1.replace(/>○○アイテム<\/a:t>/, '>' + escapeXml(title) + 'アイテム</a:t>');
-  s1 = s1.replace(/>○○年○月○日<\/a:t>/, '>' + escapeXml(date) + '</a:t>');
-  s1 = s1.replace(/>\{担当者名\}<\/a:t>/, '>' + escapeXml(staffName) + '</a:t>');
+  // タイトルの○○を書き換え（最初の○○のみ）
+  s1 = s1.replace('<a:t>○○</a:t>', '<a:t>' + escapeXml(title) + '</a:t>');
+  // 日付の○○年○月○日は複数タグに分割 → 全体を1タグにまとめる方式
+  s1 = s1.replace(
+    '<a:t>○○</a:t></a:r><a:r><a:rPr',
+    '<a:t>' + escapeXml(date) + '</a:t></a:r><a:r><a:rPr'
+  );
+  // 担当者名
+  s1 = s1.replace('<a:t>大阪支店 {担当者名}</a:t>', '<a:t>大阪支店 ' + escapeXml(staffName) + '</a:t>');
   zip.file('ppt/slides/slide1.xml', s1);
 
-  // コンテンツスライド（slide2 or slide3）書き換え
+  // コンテンツスライド書き換え
   var contentSlide = currentSlideType === '6' ? 'ppt/slides/slide2.xml' : 'ppt/slides/slide3.xml';
-  var removeSlide = currentSlideType === '6' ? 'ppt/slides/slide3.xml' : 'ppt/slides/slide2.xml';
-  var removeRels = currentSlideType === '6' ? 'ppt/slides/_rels/slide3.xml.rels' : 'ppt/slides/_rels/slide2.xml.rels';
-  
   var sc = await zip.file(contentSlide).async('string');
   
   if (currentSlideType === '6') {
     // 6枚版：商品名を順番に置換
-    var names6 = ['TextBox 10','TextBox 14','TextBox 18','TextBox 22','TextBox 26','TextBox 30'];
-    items.slice(0,6).forEach(function(item, i) {
+    items.slice(0, 6).forEach(function(item, i) {
       sc = replaceShapeText(sc, '商品名が入ります', escapeXml(item.name), i);
     });
   } else {
     // 2枚版：商品名・価格・memo
-    items.slice(0,2).forEach(function(item, i) {
+    // 価格フィールドは「○○ヶ　」と「〇〇円」が別タグ
+    items.slice(0, 2).forEach(function(item, i) {
       var refPrice = calcRefPrice(item.cost);
       var refQty = roundUpQty(item.qty);
       sc = replaceShapeText(sc, '商品名が入ります', escapeXml(item.name), i);
-      sc = replaceShapeText(sc, '○○ヶ　〇〇円程度（参考価格）', 
-        escapeXml(refQty + 'ヶ　' + refPrice + '円程度（参考価格）'), i);
+      // 数量と価格を別々に置換
+      sc = replaceShapeText(sc, '○○ヶ　', escapeXml(refQty + 'ヶ　'), i);
+      sc = replaceShapeText(sc, '〇〇円', escapeXml(refPrice + '円'), i);
+      // memoは1つのタグに入っているが末尾が「。」で別タグ
       if (memoTexts[i]) {
-        sc = replaceShapeText(sc, 
-          'このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール。',
+        sc = replaceShapeText(sc,
+          'このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール',
           escapeXml(memoTexts[i]), i);
+        // 末尾の「。」タグを空にする
+        sc = replaceShapeText(sc, '。', '', i);
       }
     });
   }
   zip.file(contentSlide, sc);
 
   // 最終スライド（slide4）：連絡先書き換え
+  // 「＿＿＿＿（」「営業担当」「）」が別タグ
   var s4 = await zip.file('ppt/slides/slide4.xml').async('string');
-  s4 = s4.replace(/>（営業担当）<\/a:t>/, '>（' + escapeXml(staffName) + '）</a:t>');
-  s4 = s4.replace(/>090-xxxx-xxxx<\/a:t>/, '>' + escapeXml(staffPhone || '要確認') + '</a:t>');
-  s4 = s4.replace(/>XXXXXXXXX@trans\.co\.jp<\/a:t>/, '>' + escapeXml(staffEmail || '要確認') + '</a:t>');
+  s4 = s4.replace('<a:t>営業担当</a:t>', '<a:t>' + escapeXml(staffName) + '</a:t>');
+  s4 = s4.replace('<a:t>090-xxxx-xxxx</a:t>', '<a:t>' + escapeXml(staffPhone || '要確認') + '</a:t>');
+  // メールは「XXXXXXXXX」と「@trans.co.jp」が別タグ
+  s4 = s4.replace('<a:t>XXXXXXXXX</a:t>', '<a:t>' + escapeXml((staffEmail || 'メール要確認').split('@')[0]) + '</a:t>');
+  s4 = s4.replace('<a:t>@trans.co.jp</a:t>', '<a:t>@' + escapeXml((staffEmail || '@trans.co.jp').split('@')[1] || 'trans.co.jp') + '</a:t>');
   zip.file('ppt/slides/slide4.xml', s4);
 
   // ダウンロード
