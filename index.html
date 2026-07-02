@@ -277,80 +277,83 @@ async function generatePptx() {
 async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var { title, date, staffName, staffPhone, staffEmail, items } = params;
   
-  // Base64デコード
   var binary = atob(fmtB64.replace(/\s/g, ''));
   var bytes = new Uint8Array(binary.length);
   for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  
   var zip = await JSZip.loadAsync(bytes);
   
-  // スライド1（タイトル）書き換え
-  // 実際のXML: <a:t>○○</a:t>...</a:t>アイテム</a:t> と分割されている
+  // スライド1（タイトル）
   var s1 = await zip.file('ppt/slides/slide1.xml').async('string');
-  // デバッグ：○○の存在確認
-  console.log('○○の数:', (s1.match(/<a:t>○○<\/a:t>/g) || []).length);
-  console.log('商品名が入りますの確認用slide2取得前');
-  // タイトルの○○を書き換え（最初の○○のみ）
-  s1 = s1.replace('<a:t>○○</a:t>', '<a:t>' + escapeXml(title) + '</a:t>');
-  // 日付の○○年○月○日は複数タグに分割 → 全体を1タグにまとめる方式
-  s1 = s1.replace(
-    '<a:t>○○</a:t></a:r><a:r><a:rPr',
-    '<a:t>' + escapeXml(date) + '</a:t></a:r><a:r><a:rPr'
-  );
+  // タイトル「○○」→title（最初の1つのみ）
+  s1 = s1.replace('<a:t>\u25cb\u25cb</a:t>', '<a:t>' + escapeXml(title) + '</a:t>');
+  // 日付：2つ目の「○○」→date全体、残りの年月日を空に
+  s1 = s1.replace('<a:t>\u25cb\u25cb</a:t>', '<a:t>' + escapeXml(date) + '</a:t>');
+  s1 = s1.replace('<a:t>\u5e74</a:t>', '<a:t></a:t>');
+  s1 = s1.replace('<a:t>\u25cb</a:t>', '<a:t></a:t>');
+  s1 = s1.replace('<a:t>\u6708</a:t>', '<a:t></a:t>');
+  s1 = s1.replace('<a:t>\u25cb</a:t>', '<a:t></a:t>');
+  s1 = s1.replace('<a:t>\u65e5</a:t>', '<a:t></a:t>');
   // 担当者名
-  s1 = s1.replace('<a:t>大阪支店 {担当者名}</a:t>', '<a:t>大阪支店 ' + escapeXml(staffName) + '</a:t>');
+  s1 = s1.replace('<a:t>\u5927\u962a\u652f\u5e97 {\u62c5\u5f53\u8005\u540d}</a:t>', '<a:t>\u5927\u962a\u652f\u5e97 ' + escapeXml(staffName) + '</a:t>');
   zip.file('ppt/slides/slide1.xml', s1);
 
-  // コンテンツスライド書き換え
+  // コンテンツスライド
   var contentSlide = currentSlideType === '6' ? 'ppt/slides/slide2.xml' : 'ppt/slides/slide3.xml';
   var sc = await zip.file(contentSlide).async('string');
-  console.log('商品名が入りますの数:', (sc.match(/<a:t>商品名が入ります<\/a:t>/g) || []).length);
-  console.log('slideType:', currentSlideType, 'items:', items.length);
-  
+
   if (currentSlideType === '6') {
-    // 6枚版：商品名を順番に置換
-    items.slice(0, 6).forEach(function(item, i) {
-      sc = replaceShapeText(sc, '商品名が入ります', escapeXml(item.name), i);
+    var idx6 = 0;
+    sc = sc.replace(/<a:t>\u5546\u54c1\u540d\u304c\u5165\u308a\u307e\u3059<\/a:t>/g, function() {
+      var name = items[idx6] ? escapeXml(items[idx6].name) : '';
+      idx6++;
+      return '<a:t>' + name + '</a:t>';
     });
   } else {
-    // 2枚版：商品名・価格・memo
-    // 価格フィールドは「○○ヶ　」と「〇〇円」が別タグ
-    items.slice(0, 2).forEach(function(item, i) {
-      var refPrice = calcRefPrice(item.cost);
-      var refQty = roundUpQty(item.qty);
-      sc = replaceShapeText(sc, '商品名が入ります', escapeXml(item.name), i);
-      // 数量と価格を別々に置換
-      sc = replaceShapeText(sc, '○○ヶ　', escapeXml(refQty + 'ヶ　'), i);
-      sc = replaceShapeText(sc, '〇〇円', escapeXml(refPrice + '円'), i);
-      // memoは1つのタグに入っているが末尾が「。」で別タグ
-      if (memoTexts[i]) {
-        sc = replaceShapeText(sc,
-          'このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール',
-          escapeXml(memoTexts[i]), i);
-        // 末尾の「。」タグを空にする
-        sc = replaceShapeText(sc, '。', '', i);
-      }
+    var idx2 = 0;
+    sc = sc.replace(/<a:t>\u5546\u54c1\u540d\u304c\u5165\u308a\u307e\u3059<\/a:t>/g, function() {
+      var name = items[idx2] ? escapeXml(items[idx2].name) : '';
+      idx2++;
+      return '<a:t>' + name + '</a:t>';
     });
+    var qtyIdx = 0;
+    sc = sc.replace(/<a:t>\u25cb\u25cb\u3051\u3000<\/a:t>/g, function() {
+      var qty = items[qtyIdx] ? escapeXml(String(roundUpQty(items[qtyIdx].qty)) + '\u3051\u3000') : '';
+      qtyIdx++;
+      return '<a:t>' + qty + '</a:t>';
+    });
+    var priceIdx = 0;
+    sc = sc.replace(/<a:t>\u3007\u3007\u5186<\/a:t>/g, function() {
+      var price = items[priceIdx] ? escapeXml(String(calcRefPrice(items[priceIdx].cost)) + '\u5186') : '';
+      priceIdx++;
+      return '<a:t>' + price + '</a:t>';
+    });
+    if (memoTexts && memoTexts.length > 0) {
+      var memoIdx = 0;
+      sc = sc.replace(/<a:t>\u3053\u306e\u30a2\u30a4\u30c6\u30e0\u306e\u63a8\u3057\u30dd\u30a4\u30f3\u30c8\u3092\u3007\u3007\u6587\u5b57\u7a0b\u5ea6\u3067\u8a18\u8f09\u3057\u307e\u3059\u3002\u5b9f\u7528\u6027\u3084\u30c7\u30b6\u30a4\u30f3\u6027\u3001\u30b3\u30b9\u30c8\u30d1\u30d5\u30a9\u30fc\u30de\u30f3\u30b9\u306a\u3069\u9b45\u529b\u3092\u7c21\u6f54\u306b\u30a2\u30d4\u30fc\u30eb<\/a:t>/g, function() {
+        var memo = memoTexts[memoIdx] ? escapeXml(memoTexts[memoIdx]) : '';
+        memoIdx++;
+        return '<a:t>' + memo + '</a:t>';
+      });
+      sc = sc.replace(/<a:t>\u3002<\/a:t>/g, '<a:t></a:t>');
+    }
   }
   zip.file(contentSlide, sc);
 
-  // 最終スライド（slide4）：連絡先書き換え
-  // 「＿＿＿＿（」「営業担当」「）」が別タグ
+  // slide4（まとめ）
   var s4 = await zip.file('ppt/slides/slide4.xml').async('string');
-  s4 = s4.replace('<a:t>営業担当</a:t>', '<a:t>' + escapeXml(staffName) + '</a:t>');
-  s4 = s4.replace('<a:t>090-xxxx-xxxx</a:t>', '<a:t>' + escapeXml(staffPhone || '要確認') + '</a:t>');
-  // メールは「XXXXXXXXX」と「@trans.co.jp」が別タグ
-  s4 = s4.replace('<a:t>XXXXXXXXX</a:t>', '<a:t>' + escapeXml((staffEmail || 'メール要確認').split('@')[0]) + '</a:t>');
-  s4 = s4.replace('<a:t>@trans.co.jp</a:t>', '<a:t>@' + escapeXml((staffEmail || '@trans.co.jp').split('@')[1] || 'trans.co.jp') + '</a:t>');
+  s4 = s4.replace('<a:t>\u55b6\u696d\u62c5\u5f53</a:t>', '<a:t>' + escapeXml(staffName) + '</a:t>');
+  s4 = s4.replace('<a:t>090-xxxx-xxxx</a:t>', '<a:t>' + escapeXml(staffPhone || '\u8981\u78ba\u8a8d') + '</a:t>');
+  var ep = (staffEmail || '').split('@');
+  s4 = s4.replace('<a:t>XXXXXXXXX</a:t>', '<a:t>' + escapeXml(ep[0] || '\u30e1\u30fc\u30eb\u8981\u78ba\u8a8d') + '</a:t>');
+  s4 = s4.replace('<a:t>@trans.co.jp</a:t>', '<a:t>@' + escapeXml(ep[1] || 'trans.co.jp') + '</a:t>');
   zip.file('ppt/slides/slide4.xml', s4);
 
-  // ダウンロード
   var blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
-  var fmtLabel = currentFmtType === 'item' ? 'アイテムご提案資料' : '実績ご紹介資料';
-  a.download = '【トランス】' + title + '_' + fmtLabel + '.pptx';
+  var fmtLabel = currentFmtType === 'item' ? '\u30a2\u30a4\u30c6\u30e0\u3054\u63d0\u6848\u8cc7\u6599' : '\u5b9f\u7e3e\u3054\u7d39\u4ecb\u8cc7\u6599';
+  a.download = '\u300a\u30c8\u30e9\u30f3\u30b9\u300b' + title + '_' + fmtLabel + '.pptx';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
