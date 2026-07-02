@@ -1588,7 +1588,7 @@ function buildCheckList(tab) {
     var priceText = item.cost ? calcRefPrice(item.cost) + '円程度' : '要確認';
     var qtyText = item.qty ? roundUpQty(item.qty) + '個' : '要確認';
     html += '<div class="check-item">';
-    html += '<input type="checkbox" id="chk_' + listId + '_' + i + '" checked>';
+    html += '<input type="checkbox" id="chk_' + listId + '_' + i + '">';
     html += '<label for="chk_' + listId + '_' + i + '">';
     html += '<strong>' + (item.name || '商品名不明') + '</strong>';
     html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + qtyText + ' / ' + priceText + '）</span>';
