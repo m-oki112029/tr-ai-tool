@@ -276,78 +276,84 @@ async function generatePptx() {
 // JSZipでパワポのXMLを書き換える（実際のXML構造に合わせた版）
 async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var { title, date, staffName, staffPhone, staffEmail, items } = params;
-  
+
   var binary = atob(fmtB64.replace(/\s/g, ''));
   var bytes = new Uint8Array(binary.length);
   for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   var zip = await JSZip.loadAsync(bytes);
-  
-  // スライド1（タイトル）
+
+  // ===== スライド1（タイトル）=====
   var s1 = await zip.file('ppt/slides/slide1.xml').async('string');
-  // タイトル「○○」→title（最初の1つのみ）
   s1 = s1.replace('<a:t>○○</a:t>', '<a:t>' + escapeXml(title) + '</a:t>');
-  // 日付：2つ目の「○○」→date全体、残りの年月日を空に
   s1 = s1.replace('<a:t>○○</a:t>', '<a:t>' + escapeXml(date) + '</a:t>');
   s1 = s1.replace('<a:t>年</a:t>', '<a:t></a:t>');
   s1 = s1.replace('<a:t>○</a:t>', '<a:t></a:t>');
   s1 = s1.replace('<a:t>月</a:t>', '<a:t></a:t>');
   s1 = s1.replace('<a:t>○</a:t>', '<a:t></a:t>');
   s1 = s1.replace('<a:t>日</a:t>', '<a:t></a:t>');
-  // 担当者名
   s1 = s1.replace('<a:t>大阪支店 {担当者名}</a:t>', '<a:t>大阪支店 ' + escapeXml(staffName) + '</a:t>');
   zip.file('ppt/slides/slide1.xml', s1);
 
-  // コンテンツスライド
+  // デバッグ
+  console.log('items:', JSON.stringify(items.slice(0,3)));
+  console.log('slideType:', currentSlideType);
+
+  // ===== コンテンツスライド =====
   var contentSlide = currentSlideType === '6' ? 'ppt/slides/slide2.xml' : 'ppt/slides/slide3.xml';
   var sc = await zip.file(contentSlide).async('string');
 
   if (currentSlideType === '6') {
-    var idx6 = 0;
+    // 6枚版：商品名を順番に全置換
+    var n6 = 0;
     sc = sc.replace(/<a:t>商品名が入ります<\/a:t>/g, function() {
-      var name = items[idx6] ? escapeXml(items[idx6].name) : '';
-      idx6++;
-      return '<a:t>' + name + '</a:t>';
+      var v = items[n6] ? escapeXml(items[n6].name) : '商品名が入ります';
+      n6++; return '<a:t>' + v + '</a:t>';
     });
   } else {
-    var idx2 = 0;
+    // 2枚版：商品名
+    var n2 = 0;
     sc = sc.replace(/<a:t>商品名が入ります<\/a:t>/g, function() {
-      var name = items[idx2] ? escapeXml(items[idx2].name) : '';
-      idx2++;
-      return '<a:t>' + name + '</a:t>';
+      var v = items[n2] ? escapeXml(items[n2].name) : '商品名が入ります';
+      n2++; return '<a:t>' + v + '</a:t>';
     });
-    var qtyIdx = 0;
-    sc = sc.replace(/<a:t>\u25cb\u25cbヶ　<\/a:t>/g, function() {
-      var qty = items[qtyIdx] ? escapeXml(String(roundUpQty(items[qtyIdx].qty)) + 'ヶ　') : '';
-      qtyIdx++;
-      return '<a:t>' + qty + '</a:t>';
+    // 数量
+    var nq = 0;
+    sc = sc.replace(/<a:t>○○ヶ　<\/a:t>/g, function() {
+      var v = items[nq] ? escapeXml(String(roundUpQty(items[nq].qty)) + 'ヶ　') : '○○ヶ　';
+      nq++; return '<a:t>' + v + '</a:t>';
     });
-    var priceIdx = 0;
+    // 価格
+    var np = 0;
     sc = sc.replace(/<a:t>〇〇円<\/a:t>/g, function() {
-      var price = items[priceIdx] ? escapeXml(String(calcRefPrice(items[priceIdx].cost)) + '円') : '';
-      priceIdx++;
-      return '<a:t>' + price + '</a:t>';
+      var v = items[np] ? escapeXml(String(calcRefPrice(items[np].cost)) + '円') : '〇〇円';
+      np++; return '<a:t>' + v + '</a:t>';
     });
+    // memo
     if (memoTexts && memoTexts.length > 0) {
-      var memoIdx = 0;
+      var nm = 0;
       sc = sc.replace(/<a:t>このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール<\/a:t>/g, function() {
-        var memo = memoTexts[memoIdx] ? escapeXml(memoTexts[memoIdx]) : '';
-        memoIdx++;
-        return '<a:t>' + memo + '</a:t>';
+        var v = memoTexts[nm] ? escapeXml(memoTexts[nm]) : '';
+        nm++; return '<a:t>' + v + '</a:t>';
       });
       sc = sc.replace(/<a:t>。<\/a:t>/g, '<a:t></a:t>');
     }
   }
   zip.file(contentSlide, sc);
 
-  // slide4（まとめ）
+  // ===== スライド4（まとめ）=====
   var s4 = await zip.file('ppt/slides/slide4.xml').async('string');
+  // 担当者：「＿＿＿＿（」「営業担当」「）」の3タグ→真ん中だけ置換
   s4 = s4.replace('<a:t>営業担当</a:t>', '<a:t>' + escapeXml(staffName) + '</a:t>');
+  // 「＿＿＿＿（」と「）」を空にする
+  s4 = s4.replace('<a:t>＿＿＿＿（</a:t>', '<a:t></a:t>');
+  s4 = s4.replace('<a:t>）</a:t>', '<a:t></a:t>');
   s4 = s4.replace('<a:t>090-xxxx-xxxx</a:t>', '<a:t>' + escapeXml(staffPhone || '要確認') + '</a:t>');
   var ep = (staffEmail || '').split('@');
-  s4 = s4.replace('<a:t>XXXXXXXXX</a:t>', '<a:t>' + escapeXml(ep[0] || '\u30e1\u30fc\u30eb要確認') + '</a:t>');
+  s4 = s4.replace('<a:t>XXXXXXXXX</a:t>', '<a:t>' + escapeXml(ep[0] || '') + '</a:t>');
   s4 = s4.replace('<a:t>@trans.co.jp</a:t>', '<a:t>@' + escapeXml(ep[1] || 'trans.co.jp') + '</a:t>');
   zip.file('ppt/slides/slide4.xml', s4);
 
+  // ===== ダウンロード =====
   var blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
@@ -360,7 +366,7 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   URL.revokeObjectURL(url);
 }
 
-// シェイプ内のテキストをn番目の出現で置換
+
 function replaceShapeText(xml, oldText, newText, occurrence) {
   var count = 0;
   var escaped = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
