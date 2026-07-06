@@ -329,6 +329,7 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
       np++; return '<a:t>' + v + '</a:t>';
     });
     // memo
+    console.log('memoTexts:', JSON.stringify(memoTexts));
     if (memoTexts && memoTexts.length > 0) {
       var nm = 0;
       sc = sc.replace(/<a:t>このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール</a:t>/g, function() {
