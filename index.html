@@ -305,26 +305,26 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   if (currentSlideType === '6') {
     // 6枚版：商品名を順番に全置換
     var n6 = 0;
-    sc = sc.replace(/<a:t>商品名が入ります</a:t>/g, function() {
+    sc = sc.replace(/<a:t>商品名が入ります<\/a:t>/g, function() {
       var v = items[n6] ? escapeXml(items[n6].name) : '商品名が入ります';
       n6++; return '<a:t>' + v + '</a:t>';
     });
   } else {
     // 2枚版：商品名
     var n2 = 0;
-    sc = sc.replace(/<a:t>商品名が入ります</a:t>/g, function() {
+    sc = sc.replace(/<a:t>商品名が入ります<\/a:t>/g, function() {
       var v = items[n2] ? escapeXml(items[n2].name) : '商品名が入ります';
       n2++; return '<a:t>' + v + '</a:t>';
     });
     // 数量
     var nq = 0;
-    sc = sc.replace(/<a:t>○○ヶ　</a:t>/g, function() {
+    sc = sc.replace(/<a:t>○○ヶ　<\/a:t>/g, function() {
       var v = items[nq] ? escapeXml(String(roundUpQty(items[nq].qty)) + 'ヶ　') : '○○ヶ　';
       nq++; return '<a:t>' + v + '</a:t>';
     });
     // 価格
     var np = 0;
-    sc = sc.replace(/<a:t>〇〇円</a:t>/g, function() {
+    sc = sc.replace(/<a:t>〇〇円<\/a:t>/g, function() {
       var v = items[np] ? escapeXml(String(calcRefPrice(items[np].cost)) + '円') : '〇〇円';
       np++; return '<a:t>' + v + '</a:t>';
     });
@@ -332,11 +332,11 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
     console.log('memoTexts:', JSON.stringify(memoTexts));
     if (memoTexts && memoTexts.length > 0) {
       var nm = 0;
-      sc = sc.replace(/<a:t>このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール</a:t>/g, function() {
+      sc = sc.replace(/<a:t>このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール<\/a:t>/g, function() {
         var v = memoTexts[nm] ? escapeXml(memoTexts[nm]) : '';
         nm++; return '<a:t>' + v + '</a:t>';
       });
-      sc = sc.replace(/<a:t>。</a:t>/g, '<a:t></a:t>');
+      sc = sc.replace(/<a:t>。<\/a:t>/g, '<a:t></a:t>');
     }
   }
   zip.file(contentSlide, sc);
