@@ -273,6 +273,114 @@ async function generatePptx() {
   }
 }
 
+// 1アイテム分の参考元情報テキストを生成
+function formatNoteItem(item) {
+  var src = item.isKettei ? '決定商品DB' : '裏取りDB';
+  return item.name + '（' + src + '／仕入先:' + (item.supplier || '要確認') + '）';
+}
+
+// ノート欄の「・」プレースホルダー（3枠）にアイテムの参考元情報を埋め込む
+// 3枠に収まらない分は最後の枠にまとめて記載する
+function fillNoteBullets(notesXml, pageItems) {
+  if (!pageItems || pageItems.length === 0) return notesXml;
+  var SLOT_COUNT = 3;
+  var lines = [];
+  for (var i = 0; i < SLOT_COUNT; i++) {
+    if (i === SLOT_COUNT - 1) {
+      lines.push(pageItems.slice(i).map(formatNoteItem).join('、'));
+    } else {
+      lines.push(pageItems[i] ? formatNoteItem(pageItems[i]) : '');
+    }
+  }
+  var idx = 0;
+  return notesXml.replace(/<a:t>・<\/a:t>/g, function() {
+    var v = lines[idx] || '';
+    idx++;
+    return '<a:t>' + (v ? '・' + escapeXml(v) : '・') + '</a:t>';
+  });
+}
+
+// presentation.xml / rels / [Content_Types].xml に新規スライドを登録する（詳細紹介ページ増殖用）
+async function registerNewSlides(zip, newSlideParts) {
+  if (newSlideParts.length === 0) return;
+
+  var presPath = 'ppt/presentation.xml';
+  var relsPath = 'ppt/_rels/presentation.xml.rels';
+  var ctPath = '[Content_Types].xml';
+
+  var presXml = await zip.file(presPath).async('string');
+  var relsXml = await zip.file(relsPath).async('string');
+  var ctXml = await zip.file(ctPath).async('string');
+
+  var maxRid = 0;
+  (relsXml.match(/Id="rId(\d+)"/g) || []).forEach(function(m) {
+    var n = parseInt(m.match(/\d+/)[0]);
+    if (n > maxRid) maxRid = n;
+  });
+
+  var maxSldId = 0;
+  (presXml.match(/<p:sldId id="(\d+)"/g) || []).forEach(function(m) {
+    var n = parseInt(m.match(/\d+/)[0]);
+    if (n > maxSldId) maxSldId = n;
+  });
+
+  var newRelEntries = '';
+  var newSldIdEntries = '';
+  var newCtEntries = '';
+
+  newSlideParts.forEach(function(part, i) {
+    var rid = 'rId' + (maxRid + 1 + i);
+    var sldId = maxSldId + 1 + i;
+    var slideFile = part.slidePath.replace('ppt/', '');
+    newRelEntries += '<Relationship Id="' + rid + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="' + slideFile + '"/>';
+    newSldIdEntries += '<p:sldId id="' + sldId + '" r:id="' + rid + '"/>';
+    newCtEntries += '<Override PartName="/' + part.slidePath + '" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>';
+    newCtEntries += '<Override PartName="/' + part.notesPath + '" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>';
+  });
+
+  relsXml = relsXml.replace('</Relationships>', newRelEntries + '</Relationships>');
+  ctXml = ctXml.replace('</Types>', newCtEntries + '</Types>');
+  // sldIdLst内、最後のスライド（まとめページ）の直前に新規ページを挿入
+  presXml = presXml.replace(/(<p:sldIdLst>)([\s\S]*?)(<\/p:sldIdLst>)/, function(match, open, body, close) {
+    var idx = body.lastIndexOf('<p:sldId');
+    var lastEntryEnd = body.indexOf('/>', idx) + 2;
+    return open + body.substring(0, idx) + newSldIdEntries + body.substring(idx) + close;
+  });
+
+  zip.file(presPath, presXml);
+  zip.file(relsPath, relsXml);
+  zip.file(ctPath, ctXml);
+}
+
+// 使用しないスライド（画像メイン/詳細紹介のどちらか）をpresentation.xml/rels/content-typesから除去し、物理ファイルも削除する
+async function unregisterSlide(zip, slideFile, notesFile) {
+  var presPath = 'ppt/presentation.xml';
+  var relsPath = 'ppt/_rels/presentation.xml.rels';
+  var ctPath = '[Content_Types].xml';
+
+  var presXml = await zip.file(presPath).async('string');
+  var relsXml = await zip.file(relsPath).async('string');
+  var ctXml = await zip.file(ctPath).async('string');
+
+  var relMatch = relsXml.match(new RegExp('<Relationship Id="(rId\\d+)"[^>]*Target="slides/' + slideFile + '"\\s*/>'));
+  if (!relMatch) return;
+  var targetRid = relMatch[1];
+
+  relsXml = relsXml.replace(relMatch[0], '');
+  presXml = presXml.replace(new RegExp('<p:sldId id="\\d+" r:id="' + targetRid + '"\\s*/>'), '');
+  ctXml = ctXml.replace('<Override PartName="/ppt/slides/' + slideFile + '" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>', '');
+  ctXml = ctXml.replace('<Override PartName="/ppt/notesSlides/' + notesFile + '" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>', '');
+
+  zip.file(presPath, presXml);
+  zip.file(relsPath, relsXml);
+  zip.file(ctPath, ctXml);
+
+  zip.remove('ppt/slides/' + slideFile);
+  zip.remove('ppt/slides/_rels/' + slideFile + '.rels');
+  zip.remove('ppt/notesSlides/' + notesFile);
+  zip.remove('ppt/notesSlides/_rels/' + notesFile + '.rels');
+}
+
 // JSZipでパワポのXMLを書き換える（実際のXML構造に合わせた版）
 async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var { title, date, staffName, staffPhone, staffEmail, items } = params;
@@ -294,52 +402,96 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   s1 = s1.replace('<a:t>大阪支店 {担当者名}</a:t>', '<a:t>大阪支店 ' + escapeXml(staffName) + '</a:t>');
   zip.file('ppt/slides/slide1.xml', s1);
 
-  // デバッグ
-  console.log('items:', JSON.stringify(items.slice(0,3)));
-  console.log('slideType:', currentSlideType);
-
-  // ===== コンテンツスライド =====
-  var contentSlide = currentSlideType === '6' ? 'ppt/slides/slide2.xml' : 'ppt/slides/slide3.xml';
-  var sc = await zip.file(contentSlide).async('string');
-
   if (currentSlideType === '6') {
-    // 6枚版：商品名を順番に全置換
+    // ===== 画像メイン（6アイテム/ページ）=====
+    var sc = await zip.file('ppt/slides/slide2.xml').async('string');
     var n6 = 0;
     sc = sc.replace(/<a:t>商品名が入ります<\/a:t>/g, function() {
       var v = items[n6] ? escapeXml(items[n6].name) : '商品名が入ります';
       n6++; return '<a:t>' + v + '</a:t>';
     });
+    zip.file('ppt/slides/slide2.xml', sc);
+
+    // ノート欄に参考元情報を記載
+    var notesPath = 'ppt/notesSlides/notesSlide2.xml';
+    var notesXml = await zip.file(notesPath).async('string');
+    notesXml = fillNoteBullets(notesXml, items);
+    zip.file(notesPath, notesXml);
+
+    // 未使用の詳細紹介用スライドを削除
+    await unregisterSlide(zip, 'slide3.xml', 'notesSlide3.xml');
   } else {
-    // 2枚版：商品名
-    var n2 = 0;
-    sc = sc.replace(/<a:t>商品名が入ります<\/a:t>/g, function() {
-      var v = items[n2] ? escapeXml(items[n2].name) : '商品名が入ります';
-      n2++; return '<a:t>' + v + '</a:t>';
-    });
-    // 数量
-    var nq = 0;
-    sc = sc.replace(/<a:t>○○ヶ　<\/a:t>/g, function() {
-      var v = items[nq] ? escapeXml(String(roundUpQty(items[nq].qty)) + 'ヶ　') : '○○ヶ　';
-      nq++; return '<a:t>' + v + '</a:t>';
-    });
-    // 価格
-    var np = 0;
-    sc = sc.replace(/<a:t>〇〇円<\/a:t>/g, function() {
-      var v = items[np] ? escapeXml(String(calcRefPrice(items[np].cost)) + '円') : '〇〇円';
-      np++; return '<a:t>' + v + '</a:t>';
-    });
-    // memo
-    console.log('memoTexts:', JSON.stringify(memoTexts));
-    if (memoTexts && memoTexts.length > 0) {
-      var nm = 0;
-      sc = sc.replace(/<a:t>このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール<\/a:t>/g, function() {
-        var v = memoTexts[nm] ? escapeXml(memoTexts[nm]) : '';
-        nm++; return '<a:t>' + v + '</a:t>';
+    // ===== 詳細紹介（2アイテム/ページ）：3アイテム以上ならページを増殖 =====
+    var templateSlideXml = await zip.file('ppt/slides/slide3.xml').async('string');
+    var templateRelsXml = await zip.file('ppt/slides/_rels/slide3.xml.rels').async('string');
+    var templateNotesXml = await zip.file('ppt/notesSlides/notesSlide3.xml').async('string');
+    var templateNotesRelsXml = await zip.file('ppt/notesSlides/_rels/notesSlide3.xml.rels').async('string');
+
+    var pageCount = Math.max(1, Math.ceil(items.length / 2));
+    var newSlideParts = [];
+
+    for (var p = 0; p < pageCount; p++) {
+      var pageItems = items.slice(p * 2, p * 2 + 2);
+      var pageMemos = memoTexts.slice(p * 2, p * 2 + 2);
+      var sc = templateSlideXml;
+
+      // 商品名
+      var n2 = 0;
+      sc = sc.replace(/<a:t>商品名が入ります<\/a:t>/g, function() {
+        var v = pageItems[n2] ? escapeXml(pageItems[n2].name) : '商品名が入ります';
+        n2++; return '<a:t>' + v + '</a:t>';
       });
-      sc = sc.replace(/<a:t>。<\/a:t>/g, '<a:t></a:t>');
+      // 数量
+      var nq = 0;
+      sc = sc.replace(/<a:t>○○ヶ　<\/a:t>/g, function() {
+        var v = pageItems[nq] ? escapeXml(String(roundUpQty(pageItems[nq].qty)) + 'ヶ　') : '○○ヶ　';
+        nq++; return '<a:t>' + v + '</a:t>';
+      });
+      // 価格
+      var np = 0;
+      sc = sc.replace(/<a:t>〇〇円<\/a:t>/g, function() {
+        var v = pageItems[np] ? escapeXml(String(calcRefPrice(pageItems[np].cost)) + '円') : '〇〇円';
+        np++; return '<a:t>' + v + '</a:t>';
+      });
+      // memo
+      if (pageMemos && pageMemos.length > 0) {
+        var nm = 0;
+        sc = sc.replace(/<a:t>このアイテムの推しポイントを〇〇文字程度で記載します。実用性やデザイン性、コストパフォーマンスなど魅力を簡潔にアピール<\/a:t>/g, function() {
+          var v = pageMemos[nm] ? escapeXml(pageMemos[nm]) : '';
+          nm++; return '<a:t>' + v + '</a:t>';
+        });
+        sc = sc.replace(/<a:t>。<\/a:t>/g, '<a:t></a:t>');
+      }
+
+      var notesXml = fillNoteBullets(templateNotesXml, pageItems);
+
+      if (p === 0) {
+        zip.file('ppt/slides/slide3.xml', sc);
+        zip.file('ppt/notesSlides/notesSlide3.xml', notesXml);
+      } else {
+        var suffix = '_p' + (p + 1);
+        var slidePath = 'ppt/slides/slide3' + suffix + '.xml';
+        var relsPath2 = 'ppt/slides/_rels/slide3' + suffix + '.xml.rels';
+        var notesPath2 = 'ppt/notesSlides/notesSlide3' + suffix + '.xml';
+        var notesRelsPath = 'ppt/notesSlides/_rels/notesSlide3' + suffix + '.xml.rels';
+
+        var relsXml2 = templateRelsXml.replace('notesSlides/notesSlide3.xml', 'notesSlides/notesSlide3' + suffix + '.xml');
+        var notesRelsXml2 = templateNotesRelsXml.replace('../slides/slide3.xml', '../slides/slide3' + suffix + '.xml');
+
+        zip.file(slidePath, sc);
+        zip.file(relsPath2, relsXml2);
+        zip.file(notesPath2, notesXml);
+        zip.file(notesRelsPath, notesRelsXml2);
+
+        newSlideParts.push({ slidePath: slidePath, notesPath: notesPath2 });
+      }
     }
+
+    await registerNewSlides(zip, newSlideParts);
+
+    // 未使用の画像メイン用スライドを削除
+    await unregisterSlide(zip, 'slide2.xml', 'notesSlide2.xml');
   }
-  zip.file(contentSlide, sc);
 
   // ===== スライド4（まとめ）=====
   var s4 = await zip.file('ppt/slides/slide4.xml').async('string');
@@ -368,24 +520,6 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
 }
 
 
-function replaceShapeText(xml, oldText, newText, occurrence) {
-  var count = 0;
-  var escaped = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  var regex = new RegExp('<a:t>' + escaped + '</a:t>');
-  return xml.replace(new RegExp('<a:t>' + escaped + '</a:t>', 'g'), function(match) {
-    if (count === occurrence) { count++; return '<a:t>' + newText + '</a:t>'; }
-    count++;
-    return match;
-  });
-}
-
-// テキスト置換ヘルパー（XML内の<a:t>タグのテキストを置換）
-function replaceText(xml, oldText, newText, onlyFirst) {
-  var escaped = oldText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  var regex = new RegExp('<a:t>' + escaped + '</a:t>', onlyFirst ? '' : 'g');
-  return xml.replace(regex, '<a:t>' + escapeXml(newText) + '</a:t>');
-}
-
 function escapeXml(str) {
   if (!str) return '';
   return String(str)
@@ -394,28 +528,6 @@ function escapeXml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
-
-// ノートに追記する
-function addNote(slideXml, noteInfo) {
-  // ノートの既存テキストの後に追記
-  var noteMarker = '以下、参考元情報・・・';
-  if (slideXml.includes(noteMarker)) {
-    slideXml = slideXml.replace(
-      noteMarker,
-      noteMarker + '\n' + noteInfo
-    );
-  }
-  return slideXml;
-}
-
-// 連絡先情報を置換
-function replaceContactInfo(xml, staffName, staffPhone, staffEmail) {
-  xml = replaceText(xml, '（営業担当）', '（' + staffName + '）');
-  xml = replaceText(xml, '090-xxxx-xxxx', staffPhone || '要確認');
-  xml = replaceText(xml, 'XXXXXXXXX@trans.co.jp', staffEmail || '要確認');
-  return xml;
-}
-
 
 </script>
 </head>
