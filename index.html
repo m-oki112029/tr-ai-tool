@@ -265,10 +265,15 @@ async function generatePptx() {
     await modifyAndDownloadPptx(fmtB64, memoTexts, {
       title, date, staffName, staffPhone, staffEmail, items
     });
-    
+
+    var fmtLabelForLog = currentFmtType === 'item' ? 'アイテムご提案資料' : '実績ご紹介資料';
+    var slideTypeLabel = currentSlideType === '6' ? '画像メイン' : '詳細紹介';
+    logEvent('成果物', '資料作成', title + '（' + fmtLabelForLog + '／' + slideTypeLabel + '）', 'アイテム数:' + items.length);
+
     closePptxModal();
   } catch(e) {
     alert('エラーが発生しました: ' + e.message);
+    logEvent('エラー', '資料作成', e.message, e.stack || '');
     goToStep(3);
   }
 }
@@ -699,6 +704,15 @@ const WORKER_URL = "https://tr-notion-proxy.osk-trans52.workers.dev";
 const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
 const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
 
+// Notionのログ用DBにエラー・成果物イベントを送信する（送信失敗はUIに影響させない）
+function logEvent(type, feature, message, detail) {
+  fetch(WORKER_URL + '/log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: type, feature: feature, message: message, detail: detail || '' })
+  }).catch(function() {});
+}
+
 // 会話履歴を保持する配列（最大10往復まで）
 var chatHistory = [];
 
@@ -757,6 +771,7 @@ async function searchNotionDB(dbId, kw, opts) {
     var data = await response.json();
     return data.results || [];
   } catch (e) {
+    logEvent('エラー', 'システム', 'Notion検索の通信エラー', e.message);
     return [];
   }
 }
@@ -867,6 +882,7 @@ async function sendChat() {
   } catch (e) {
     document.getElementById(loadingId).remove();
     messages.innerHTML += '<div class="message ai"><div class="bubble">エラー: ' + e.message + '</div></div>';
+    logEvent('エラー', '一問一答', e.message, e.stack || '');
   }
 
   sendBtn.disabled = false;
@@ -969,6 +985,7 @@ async function sendSupplier() {
   } catch (e) {
     document.getElementById(loadingId).remove();
     messages.innerHTML += '<div class="message ai"><div class="bubble">エラー: ' + e.message + '</div></div>';
+    logEvent('エラー', '仕入先検索', e.message, e.stack || '');
   }
 
   btn.disabled = false;
@@ -1082,6 +1099,7 @@ async function sendSuggest(mode) {
 
   } catch (e) {
     results.innerHTML = 'エラー: ' + e.message;
+    logEvent('エラー', 'アイテム提案', e.message, e.stack || '');
   }
 
   searchBtn.disabled = false;
@@ -1172,6 +1190,7 @@ async function sendReport() {
 
   } catch (e) {
     results.innerHTML = 'エラー: ' + e.message;
+    logEvent('エラー', '実績を調べる', e.message, e.stack || '');
   }
 
   btn.disabled = false;
@@ -1208,6 +1227,7 @@ async function sendSuggestMore() {
   } catch(e) {
     btn.disabled = false;
     btn.textContent = 'もっと見せて';
+    logEvent('エラー', 'アイテム提案', e.message, e.stack || '');
   }
 }
 
@@ -1246,6 +1266,7 @@ async function sendReportMore() {
   } catch(e) {
     btn.disabled = false;
     btn.textContent = 'もっと見せて';
+    logEvent('エラー', '実績を調べる', e.message, e.stack || '');
   }
 }
 
