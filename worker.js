@@ -8,6 +8,17 @@ const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
 const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
 const LOG_DB_ID = "58f7f7959c814310ae9a27d5b7fcc299"; // 🪵 AIツール_ログ
 
+// ArrayBufferをBase64に変換する（大きな画像でもスタックオーバーフローしないようチャンク処理）
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 // Notionのログ用DBに1件書き込む。失敗してもアプリ本体の処理は止めない（ベストエフォート）。
 async function logToNotion(env, type, feature, message, detail) {
   try {
@@ -88,6 +99,27 @@ export default {
         return new Response(JSON.stringify({ ok: true }), {
           headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
         });
+      }
+
+      // 商品画像の取得プロキシ（ブラウザから直接NotionのURLを読むとCORSで失敗するため、Worker経由で取得する）
+      if (path === "/pptx/image" && request.method === "POST") {
+        const { url: imageUrl } = await request.json();
+        try {
+          const imgRes = await fetch(imageUrl);
+          if (!imgRes.ok) throw new Error("画像取得に失敗しました（status:" + imgRes.status + "）");
+          const contentType = imgRes.headers.get("content-type") || "image/jpeg";
+          const buf = await imgRes.arrayBuffer();
+          const base64 = arrayBufferToBase64(buf);
+          return new Response(JSON.stringify({ base64, contentType }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "資料作成", "商品画像の取得に失敗", e.message + " url:" + imageUrl));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
       }
 
       if (path === "/notion/search" && request.method === "POST") {

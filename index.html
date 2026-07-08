@@ -153,8 +153,9 @@ function extractItemsFromResults(dataArray) {
     var supplierMatch = text.match(/仕入先:([^\s\/]+)/);
     var customerMatch = text.match(/仕入先:([^\s\/]+)/); 
     var dateMatch = text.match(/納期:(\S+)/);
+    var imageMatch = text.match(/画像:(\S+)/);
     var isKettei = text.includes('[受注実績]');
-    
+
     if (nameMatch) {
       items.push({
         name: nameMatch[1] || nameMatch[2] || '',
@@ -162,6 +163,7 @@ function extractItemsFromResults(dataArray) {
         qty: qtyMatch ? parseInt(qtyMatch[1]) : null,
         supplier: supplierMatch ? supplierMatch[1] : '要確認',
         date: dateMatch ? dateMatch[1] : '',
+        imageUrl: imageMatch ? imageMatch[1] : '',
         isKettei: isKettei,
         rawText: text
       });
@@ -314,6 +316,76 @@ function fillNoteBullets(notesXml, pageItems) {
   return notesXml.replace(NOTE_BULLET_RUN_REGEX, paragraphs);
 }
 
+// 商品画像プレースホルダー（水色の四角形「商品画像」）を表す<p:sp>ブロック1つ分にマッチする
+// （p:sp同士は入れ子にならない前提。負先読みで別のshapeの境界を越えないようにする）
+var IMAGE_PLACEHOLDER_REGEX = /<p:sp>(?:(?!<\/?p:sp>)[\s\S])*?<a:t>商品画像<\/a:t>(?:(?!<\/?p:sp>)[\s\S])*?<\/p:sp>/g;
+
+// Worker経由で商品画像を取得し、base64とファイル拡張子を返す（取得できなければnull）
+async function fetchProductImage(imageUrl) {
+  if (!imageUrl) return null;
+  try {
+    var res = await fetch(WORKER_URL + '/pptx/image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: imageUrl })
+    });
+    var data = await res.json();
+    if (!data.base64) return null;
+    var ext = (data.contentType || '').indexOf('png') !== -1 ? 'png' : 'jpg';
+    return { base64: data.base64, ext: ext, contentType: data.contentType || 'image/jpeg' };
+  } catch (e) {
+    return null;
+  }
+}
+
+// 選択されたアイテムのうち画像URLを持つものについて、まとめて画像を取得しておく
+// （item.imageDataに { base64, ext, contentType } を格納する。取得失敗時はnullのまま＝プレースホルダー据え置き）
+async function prefetchProductImages(items) {
+  await Promise.all(items.map(async function(item) {
+    if (item.imageUrl) {
+      item.imageData = await fetchProductImage(item.imageUrl);
+    }
+  }));
+}
+
+// スライドXML内の商品画像プレースホルダーを、取得済みの画像（あれば）で塗りつぶしに差し替える
+// zipに新しい画像パーツを追加し、relsXmlにも画像へのrelationshipを追加して返す
+function fillProductImages(slideXml, relsXml, pageItems, zip, mediaCounter) {
+  var maxRid = 0;
+  (relsXml.match(/Id="rId(\d+)"/g) || []).forEach(function(m) {
+    var n = parseInt(m.match(/\d+/)[0]);
+    if (n > maxRid) maxRid = n;
+  });
+
+  var idx = 0;
+  var sc = slideXml.replace(IMAGE_PLACEHOLDER_REGEX, function(shapeXml) {
+    var item = pageItems[idx];
+    idx++;
+    if (!item || !item.imageData) return shapeXml;
+
+    maxRid++;
+    var rId = 'rId' + maxRid;
+    mediaCounter.count++;
+    var mediaFile = 'photoCustom' + mediaCounter.count + '.' + item.imageData.ext;
+    zip.file('ppt/media/' + mediaFile, item.imageData.base64, { base64: true });
+    relsXml = relsXml.replace('</Relationships>',
+      '<Relationship Id="' + rId + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/' + mediaFile + '"/></Relationships>');
+
+    var withImage = shapeXml.replace(/<a:solidFill>[\s\S]*?<\/a:solidFill>/,
+      '<a:blipFill><a:blip r:embed="' + rId + '"/><a:stretch><a:fillRect/></a:stretch></a:blipFill>');
+    withImage = withImage.replace('<a:t>商品画像</a:t>', '<a:t></a:t>');
+    return withImage;
+  });
+
+  return { sc: sc, relsXml: relsXml };
+}
+
+// [Content_Types].xmlに指定の拡張子のDefaultが無ければ追加する
+function ensureContentTypeDefault(ctXml, ext, mime) {
+  if (ctXml.indexOf('Default Extension="' + ext + '"') !== -1) return ctXml;
+  return ctXml.replace('</Types>', '<Default Extension="' + ext + '" ContentType="' + mime + '"/></Types>');
+}
+
 // presentation.xml / rels / [Content_Types].xml に新規スライドを登録する（詳細紹介ページ増殖用）
 async function registerNewSlides(zip, newSlideParts) {
   if (newSlideParts.length === 0) return;
@@ -398,6 +470,8 @@ async function unregisterSlide(zip, slideFile, notesFile) {
 // baseSlideNumのスライドをテンプレートに、itemsPerPageアイテムごとにページを増殖する
 // （画像メイン=slide2/6アイテム、詳細紹介=slide3/2アイテムの両方で共用）
 // fillPageFn(templateXml, pageItems, pageMemos) はページ分のXML文字列を返すコールバック
+// fillPageFn(templateSlideXml, pageItems, pageMemos, templateRelsXml, zip) は
+// { sc, relsXml } を返す（画像埋め込みなどでrelsに新しい関係を追加できるようにするため）
 async function generateContentPages(zip, baseSlideNum, itemsPerPage, items, memoTexts, fillPageFn) {
   var baseSlideFile = 'slide' + baseSlideNum + '.xml';
   var baseNotesFile = 'notesSlide' + baseSlideNum + '.xml';
@@ -413,11 +487,14 @@ async function generateContentPages(zip, baseSlideNum, itemsPerPage, items, memo
   for (var p = 0; p < pageCount; p++) {
     var pageItems = items.slice(p * itemsPerPage, p * itemsPerPage + itemsPerPage);
     var pageMemos = memoTexts.slice(p * itemsPerPage, p * itemsPerPage + itemsPerPage);
-    var sc = fillPageFn(templateSlideXml, pageItems, pageMemos);
+    var result = fillPageFn(templateSlideXml, pageItems, pageMemos, templateRelsXml, zip);
+    var sc = result.sc;
+    var relsXml = result.relsXml;
     var notesXml = fillNoteBullets(templateNotesXml, pageItems);
 
     if (p === 0) {
       zip.file('ppt/slides/' + baseSlideFile, sc);
+      zip.file('ppt/slides/_rels/' + baseSlideFile + '.rels', relsXml);
       zip.file('ppt/notesSlides/' + baseNotesFile, notesXml);
     } else {
       var suffix = '_p' + (p + 1);
@@ -428,11 +505,11 @@ async function generateContentPages(zip, baseSlideNum, itemsPerPage, items, memo
       var notesPath = 'ppt/notesSlides/' + notesFile;
       var notesRelsPath = 'ppt/notesSlides/_rels/' + notesFile + '.rels';
 
-      var relsXml = templateRelsXml.replace('notesSlides/' + baseNotesFile, 'notesSlides/' + notesFile);
+      var pageRelsXml = relsXml.replace('notesSlides/' + baseNotesFile, 'notesSlides/' + notesFile);
       var notesRelsXml = templateNotesRelsXml.replace('../slides/' + baseSlideFile, '../slides/' + slideFile);
 
       zip.file(slidePath, sc);
-      zip.file(relsPath, relsXml);
+      zip.file(relsPath, pageRelsXml);
       zip.file(notesPath, notesXml);
       zip.file(notesRelsPath, notesRelsXml);
 
@@ -452,6 +529,10 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   var zip = await JSZip.loadAsync(bytes);
 
+  // 商品画像URLを持つアイテムがあれば、まとめて画像を取得しておく（決定商品DB由来のみ）
+  await prefetchProductImages(items);
+  var mediaCounter = { count: 0 };
+
   // ===== スライド1（タイトル）=====
   var s1 = await zip.file('ppt/slides/slide1.xml').async('string');
   s1 = s1.replace('<a:t>○○</a:t>', '<a:t>' + escapeXml(title) + '</a:t>');
@@ -466,7 +547,7 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
 
   if (currentSlideType === '6') {
     // ===== 画像メイン（6アイテム/ページ）：7アイテム以上ならページを増殖 =====
-    await generateContentPages(zip, 2, 6, items, [], function(templateXml, pageItems) {
+    await generateContentPages(zip, 2, 6, items, [], function(templateXml, pageItems, pageMemos, templateRelsXml, zipRef) {
       var sc = templateXml;
       var n6 = 0;
       sc = sc.replace(/<a:t>商品名が入ります<\/a:t>/g, function() {
@@ -482,14 +563,15 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
         }
         nc++; return '<a:t>' + v + '</a:t>';
       });
-      return sc;
+      // 商品画像
+      return fillProductImages(sc, templateRelsXml, pageItems, zipRef, mediaCounter);
     });
 
     // 未使用の詳細紹介用スライドを削除
     await unregisterSlide(zip, 'slide3.xml', 'notesSlide3.xml');
   } else {
     // ===== 詳細紹介（2アイテム/ページ）：3アイテム以上ならページを増殖 =====
-    await generateContentPages(zip, 3, 2, items, memoTexts, function(templateXml, pageItems, pageMemos) {
+    await generateContentPages(zip, 3, 2, items, memoTexts, function(templateXml, pageItems, pageMemos, templateRelsXml, zipRef) {
       var sc = templateXml;
 
       // 商品名
@@ -519,7 +601,8 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
         });
         sc = sc.replace(/<a:t>。<\/a:t>/g, '<a:t></a:t>');
       }
-      return sc;
+      // 商品画像
+      return fillProductImages(sc, templateRelsXml, pageItems, zipRef, mediaCounter);
     });
 
     // 未使用の画像メイン用スライドを削除
@@ -538,6 +621,14 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   s4 = s4.replace('<a:t>XXXXXXXXX</a:t>', '<a:t>' + escapeXml(ep[0] || '') + '</a:t>');
   s4 = s4.replace('<a:t>@trans.co.jp</a:t>', '<a:t>@' + escapeXml(ep[1] || 'trans.co.jp') + '</a:t>');
   zip.file('ppt/slides/slide4.xml', s4);
+
+  // 商品画像を埋め込んだ場合、拡張子のContent_Types定義があるか確認
+  if (mediaCounter.count > 0) {
+    var ctXml = await zip.file('[Content_Types].xml').async('string');
+    ctXml = ensureContentTypeDefault(ctXml, 'jpg', 'image/jpeg');
+    ctXml = ensureContentTypeDefault(ctXml, 'png', 'image/png');
+    zip.file('[Content_Types].xml', ctXml);
+  }
 
   // ===== ダウンロード =====
   var blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
@@ -815,7 +906,8 @@ function pageToText(page, type) {
     var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : '';
     var margin = (p['粗利率'] && p['粗利率'].number) ? Math.round(p['粗利率'].number * 100) + '%' : '';
     var date = (p['納期'] && p['納期'].date) ? p['納期'].date.start : '';
-    return '[受注実績] 商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 仕入単価:' + ketteiCost + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 納期:' + date;
+    var image = (p['画像①URL'] && p['画像①URL'].url) ? p['画像①URL'].url : '';
+    return '[受注実績] 商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 仕入単価:' + ketteiCost + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 納期:' + date + ' 画像:' + image;
   } else {
     var name2 = (p['商品名'] && p['商品名'].title && p['商品名'].title[0]) ? p['商品名'].title[0].text.content : '';
     var sup2 = (p['仕入先'] && p['仕入先'].rich_text && p['仕入先'].rich_text[0]) ? p['仕入先'].rich_text[0].text.content : '';
