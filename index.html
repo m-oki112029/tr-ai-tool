@@ -781,12 +781,13 @@ function pageToText(page, type) {
   if (type === 'kettei') {
     var name = (p['商材名'] && p['商材名'].title && p['商材名'].title[0]) ? p['商材名'].title[0].text.content : '';
     var price = (p['売単価'] && p['売単価'].number) ? p['売単価'].number : '';
+    var ketteiCost = (p['仕入単価'] && p['仕入単価'].number) ? p['仕入単価'].number : '';
     var cat = (p['カテゴリ'] && p['カテゴリ'].select) ? p['カテゴリ'].select.name : '';
     var sup = (p['仕入先'] && p['仕入先'].rich_text && p['仕入先'].rich_text[0]) ? p['仕入先'].rich_text[0].text.content : '';
     var qty = (p['数量'] && p['数量'].number) ? p['数量'].number : '';
     var margin = (p['粗利率'] && p['粗利率'].number) ? Math.round(p['粗利率'].number * 100) + '%' : '';
     var date = (p['納期'] && p['納期'].date) ? p['納期'].date.start : '';
-    return '[受注実績] 商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 納期:' + date;
+    return '[受注実績] 商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 仕入単価:' + ketteiCost + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 納期:' + date;
   } else {
     var name2 = (p['商品名'] && p['商品名'].title && p['商品名'].title[0]) ? p['商品名'].title[0].text.content : '';
     var sup2 = (p['仕入先'] && p['仕入先'].rich_text && p['仕入先'].rich_text[0]) ? p['仕入先'].rich_text[0].text.content : '';
@@ -1352,7 +1353,8 @@ function buildCheckList(tab) {
 
   items.forEach(function(item, i) {
     var src = item.isKettei ? '決定商品DB' : '裏取りDB';
-    var priceText = item.cost ? calcRefPrice(item.cost) + '円程度' : '要確認';
+    var priceLabel = tab === 'report' ? '資料表記' : '';
+    var priceText = item.cost ? priceLabel + calcRefPrice(item.cost) + '円程度' : '要確認';
     var qtyText = item.qty ? roundUpQty(item.qty) + '個' : '要確認';
     html += '<div class="check-item">';
     html += '<input type="checkbox" id="chk_' + listId + '_' + i + '">';

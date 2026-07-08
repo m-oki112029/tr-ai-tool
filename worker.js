@@ -43,6 +43,33 @@ function isGeminiFailure(answer) {
   return !answer || answer === "回答を取得できませんでした";
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Gemini APIを呼び出す。503（混雑）・429（レート制限）は一時的なエラーのことが多いため、
+// 短い待機を挟んで最大2回まで自動リトライする。
+async function callGemini(env, contents) {
+  const MAX_RETRIES = 2;
+  let data = null;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents }),
+      }
+    );
+    data = await res.json();
+    const errorCode = data?.error?.code;
+    const isRetryable = errorCode === 503 || errorCode === 429;
+    if (!isRetryable) return data;
+    if (attempt < MAX_RETRIES) await sleep(800 * (attempt + 1));
+  }
+  return data;
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
@@ -158,15 +185,7 @@ ${items.map((item, i) => `No.${i+1}: ${item.name}（仕入単価:${item.cost}円
 ・以下のJSON形式のみで返す（前後の説明文不要）：
 {"memos": ["商品1の推しポイント", "商品2の推しポイント"]}`;
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: memoPrompt }] }] }),
-          }
-        );
-        const geminiData = await geminiRes.json();
+        const geminiData = await callGemini(env, [{ role: "user", parts: [{ text: memoPrompt }] }]);
         const geminiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? '{"memos":[]}';
         let memoTexts = [];
         try {
@@ -212,17 +231,7 @@ No.2 ...
 ・データにない項目は「不明」と書く
 ・件数サマリは書かない`;
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ role: "user", parts: [{ text: prompt }] }]
-            }),
-          }
-        );
-        const data = await geminiRes.json();
+        const data = await callGemini(env, [{ role: "user", parts: [{ text: prompt }] }]);
         const answer = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "回答を取得できませんでした";
         if (isGeminiFailure(answer)) {
           ctx.waitUntil(logToNotion(env, "エラー", "実績を調べる", "Gemini応答取得失敗", JSON.stringify(data)));
@@ -287,17 +296,7 @@ No.2 ...
 
         const prompt = isSearchMode ? searchPrompt : ideaPrompt;
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ role: "user", parts: [{ text: prompt }] }]
-            }),
-          }
-        );
-        const data = await geminiRes.json();
+        const data = await callGemini(env, [{ role: "user", parts: [{ text: prompt }] }]);
         const answer = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "回答を取得できませんでした";
         if (isGeminiFailure(answer)) {
           ctx.waitUntil(logToNotion(env, "エラー", "アイテム提案", "Gemini応答取得失敗", JSON.stringify(data)));
@@ -355,15 +354,7 @@ ${notionContext}
           contents.push({ role: 'user', parts: [{ text: '【最新の検索データ】\n' + notionContext + '\n\n【質問】\n' + question }] });
         }
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ contents }),
-          }
-        );
-        const data = await geminiRes.json();
+        const data = await callGemini(env, contents);
         const answer = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "回答を取得できませんでした";
         if (isGeminiFailure(answer)) {
           ctx.waitUntil(logToNotion(env, "エラー", "仕入先検索", "Gemini応答取得失敗", JSON.stringify(data)));
@@ -462,15 +453,7 @@ ${notionContext}
           });
         }
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ contents }),
-          }
-        );
-        const data = await geminiRes.json();
+        const data = await callGemini(env, contents);
         const answer = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "回答を取得できませんでした";
         if (isGeminiFailure(answer)) {
           ctx.waitUntil(logToNotion(env, "エラー", "一問一答", "Gemini応答取得失敗", JSON.stringify(data)));
