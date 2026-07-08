@@ -320,7 +320,18 @@ function fillNoteBullets(notesXml, pageItems) {
 // （p:sp同士は入れ子にならない前提。負先読みで別のshapeの境界を越えないようにする）
 var IMAGE_PLACEHOLDER_REGEX = /<p:sp>(?:(?!<\/?p:sp>)[\s\S])*?<a:t>商品画像<\/a:t>(?:(?!<\/?p:sp>)[\s\S])*?<\/p:sp>/g;
 
-// Worker経由で商品画像を取得し、base64とファイル拡張子を返す（取得できなければnull）
+// base64画像の実際のピクセル幅・高さを取得する（縦横比を保ったまま配置するために必要）
+function loadImageDimensions(base64, contentType) {
+  return new Promise(function(resolve) {
+    if (typeof Image === 'undefined') { resolve(null); return; }
+    var img = new Image();
+    img.onload = function() { resolve({ width: img.naturalWidth, height: img.naturalHeight }); };
+    img.onerror = function() { resolve(null); };
+    img.src = 'data:' + contentType + ';base64,' + base64;
+  });
+}
+
+// Worker経由で商品画像を取得し、base64・拡張子・実サイズを返す（取得できなければnull）
 async function fetchProductImage(imageUrl) {
   if (!imageUrl) return null;
   try {
@@ -331,15 +342,18 @@ async function fetchProductImage(imageUrl) {
     });
     var data = await res.json();
     if (!data.base64) return null;
-    var ext = (data.contentType || '').indexOf('png') !== -1 ? 'png' : 'jpg';
-    return { base64: data.base64, ext: ext, contentType: data.contentType || 'image/jpeg' };
+    var contentType = data.contentType || 'image/jpeg';
+    var ext = contentType.indexOf('png') !== -1 ? 'png' : 'jpg';
+    var dims = await loadImageDimensions(data.base64, contentType);
+    if (!dims) return null; // 実サイズが取れない場合は縦横比を保証できないので挿入しない
+    return { base64: data.base64, ext: ext, contentType: contentType, width: dims.width, height: dims.height };
   } catch (e) {
     return null;
   }
 }
 
 // 選択されたアイテムのうち画像URLを持つものについて、まとめて画像を取得しておく
-// （item.imageDataに { base64, ext, contentType } を格納する。取得失敗時はnullのまま＝プレースホルダー据え置き）
+// （item.imageDataに { base64, ext, contentType, width, height } を格納する。取得失敗時はnullのまま＝プレースホルダー据え置き）
 async function prefetchProductImages(items) {
   await Promise.all(items.map(async function(item) {
     if (item.imageUrl) {
@@ -348,7 +362,44 @@ async function prefetchProductImages(items) {
   }));
 }
 
-// スライドXML内の商品画像プレースホルダーを、取得済みの画像（あれば）で塗りつぶしに差し替える
+// シェイプXMLから位置・サイズ（EMU単位）を読み取る
+function getShapeBox(shapeXml) {
+  var m = shapeXml.match(/<a:off x="(-?\d+)" y="(-?\d+)"\/><a:ext cx="(\d+)" cy="(\d+)"\/>/);
+  if (!m) return null;
+  return { x: parseInt(m[1]), y: parseInt(m[2]), w: parseInt(m[3]), h: parseInt(m[4]) };
+}
+
+// 枠(box)の中に、画像の縦横比を保ったまま収まる最大サイズ・中央配置の位置を計算する
+function fitBoxPreservingAspect(box, imgWidth, imgHeight) {
+  var boxRatio = box.w / box.h;
+  var imgRatio = imgWidth / imgHeight;
+  var fitW, fitH;
+  if (imgRatio > boxRatio) {
+    fitW = box.w;
+    fitH = Math.round(box.w / imgRatio);
+  } else {
+    fitH = box.h;
+    fitW = Math.round(box.h * imgRatio);
+  }
+  return {
+    x: Math.round(box.x + (box.w - fitW) / 2),
+    y: Math.round(box.y + (box.h - fitH) / 2),
+    w: fitW,
+    h: fitH
+  };
+}
+
+// 画像1枚分の<p:pic>要素を生成する
+function buildProductPicXml(shapeId, rId, box) {
+  return '<p:pic><p:nvPicPr><p:cNvPr id="' + shapeId + '" name="ProductPhoto' + shapeId + '"/>' +
+    '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>' +
+    '<p:blipFill><a:blip r:embed="' + rId + '"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>' +
+    '<p:spPr><a:xfrm><a:off x="' + box.x + '" y="' + box.y + '"/><a:ext cx="' + box.w + '" cy="' + box.h + '"/></a:xfrm>' +
+    '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>';
+}
+
+// スライドXML内の商品画像プレースホルダー（水色の四角形）はそのまま枠として残し、
+// その中に画像の縦横比を保ったまま中央配置した<p:pic>を重ねて挿入する
 // zipに新しい画像パーツを追加し、relsXmlにも画像へのrelationshipを追加して返す
 function fillProductImages(slideXml, relsXml, pageItems, zip, mediaCounter) {
   var maxRid = 0;
@@ -356,12 +407,20 @@ function fillProductImages(slideXml, relsXml, pageItems, zip, mediaCounter) {
     var n = parseInt(m.match(/\d+/)[0]);
     if (n > maxRid) maxRid = n;
   });
+  var maxShapeId = 0;
+  (slideXml.match(/<p:cNvPr id="(\d+)"/g) || []).forEach(function(m) {
+    var n = parseInt(m.match(/\d+/)[0]);
+    if (n > maxShapeId) maxShapeId = n;
+  });
 
   var idx = 0;
   var sc = slideXml.replace(IMAGE_PLACEHOLDER_REGEX, function(shapeXml) {
     var item = pageItems[idx];
     idx++;
     if (!item || !item.imageData) return shapeXml;
+
+    var box = getShapeBox(shapeXml);
+    if (!box) return shapeXml; // 枠の座標が取れない場合は安全のため何もしない
 
     maxRid++;
     var rId = 'rId' + maxRid;
@@ -371,10 +430,13 @@ function fillProductImages(slideXml, relsXml, pageItems, zip, mediaCounter) {
     relsXml = relsXml.replace('</Relationships>',
       '<Relationship Id="' + rId + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/' + mediaFile + '"/></Relationships>');
 
-    var withImage = shapeXml.replace(/<a:solidFill>[\s\S]*?<\/a:solidFill>/,
-      '<a:blipFill><a:blip r:embed="' + rId + '"/><a:stretch><a:fillRect/></a:stretch></a:blipFill>');
-    withImage = withImage.replace('<a:t>商品画像</a:t>', '<a:t></a:t>');
-    return withImage;
+    maxShapeId++;
+    var fitted = fitBoxPreservingAspect(box, item.imageData.width, item.imageData.height);
+    var picXml = buildProductPicXml(maxShapeId, rId, fitted);
+
+    // 元の四角形はテキストだけ消して枠として残し、直後に画像を重ねて配置
+    var frameXml = shapeXml.replace('<a:t>商品画像</a:t>', '<a:t></a:t>');
+    return frameXml + picXml;
   });
 
   return { sc: sc, relsXml: relsXml };
@@ -470,6 +532,11 @@ async function unregisterSlide(zip, slideFile, notesFile) {
 // baseSlideNumのスライドをテンプレートに、itemsPerPageアイテムごとにページを増殖する
 // （画像メイン=slide2/6アイテム、詳細紹介=slide3/2アイテムの両方で共用）
 // fillPageFn(templateXml, pageItems, pageMemos) はページ分のXML文字列を返すコールバック
+// スライド右上のページ番号表記（「01」「02」...）を作る
+function formatPageNumber(n) {
+  return n < 10 ? '0' + n : String(n);
+}
+
 // fillPageFn(templateSlideXml, pageItems, pageMemos, templateRelsXml, zip) は
 // { sc, relsXml } を返す（画像埋め込みなどでrelsに新しい関係を追加できるようにするため）
 async function generateContentPages(zip, baseSlideNum, itemsPerPage, items, memoTexts, fillPageFn) {
@@ -491,6 +558,9 @@ async function generateContentPages(zip, baseSlideNum, itemsPerPage, items, memo
     var sc = result.sc;
     var relsXml = result.relsXml;
     var notesXml = fillNoteBullets(templateNotesXml, pageItems);
+
+    // 右上のページ番号（「01」固定表記）をページ順に増やす
+    sc = sc.replace('<a:t>01</a:t>', '<a:t>' + formatPageNumber(p + 1) + '</a:t>');
 
     if (p === 0) {
       zip.file('ppt/slides/' + baseSlideFile, sc);
