@@ -267,6 +267,9 @@ No.2 ...
         const answer = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "回答を取得できませんでした";
         if (isGeminiFailure(answer)) {
           ctx.waitUntil(logToNotion(env, "エラー", "実績を調べる", "Gemini応答取得失敗", JSON.stringify(data)));
+        } else if (conditions !== "追加表示") {
+          // 資料作成まで進んだかどうかの導線分析用に、検索実行だけを軽量に記録する（結果本文は記録しない）
+          ctx.waitUntil(logToNotion(env, "検索", "実績を調べる", conditions, ""));
         }
         return new Response(JSON.stringify({ answer }), {
           headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -332,6 +335,9 @@ No.2 ...
         const answer = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "回答を取得できませんでした";
         if (isGeminiFailure(answer)) {
           ctx.waitUntil(logToNotion(env, "エラー", "アイテム提案", "Gemini応答取得失敗", JSON.stringify(data)));
+        } else if (conditions !== "追加表示") {
+          // 資料作成まで進んだかどうかの導線分析用に、検索実行だけを軽量に記録する（結果本文は記録しない）
+          ctx.waitUntil(logToNotion(env, "検索", "アイテム提案", (isSearchMode ? "条件絞り込み：" : "アイデア出し：") + conditions, ""));
         }
         return new Response(JSON.stringify({ answer }), {
           headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
