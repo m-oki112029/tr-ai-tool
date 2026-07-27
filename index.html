@@ -1066,7 +1066,7 @@ function pageToTextShiire(page) {
     return rt(field);
   }
 
-  var name = (p['仕入先: 仕入先名'] && p['仕入先: 仕入先名'].title && p['仕入先: 仕入先名'].title[0]) ? p['仕入先: 仕入先名'].title[0].text.content : '';
+  var name = (p['仕入先名'] && p['仕入先名'].title && p['仕入先名'].title[0]) ? p['仕入先名'].title[0].text.content : '';
   var industry = (p['業種'] && p['業種'].select) ? p['業種'].select.name : '';
   var category = rt('商品分類');
   var itemType = rt('商品種別（集計用）');
