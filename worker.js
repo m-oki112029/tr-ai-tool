@@ -6,6 +6,7 @@ const CORS_HEADERS = {
 
 const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
 const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
+const SHIIRE_DB_ID = "3aa562954f4381f09834d037005aba3e"; // 仕入先DB（2026年7月新設）
 const LOG_DB_ID = "58f7f7959c814310ae9a27d5b7fcc299"; // 🪵 AIツール_ログ
 
 // ArrayBufferをBase64に変換する（大きな画像でもスタックオーバーフローしないようチャンク処理）
@@ -130,6 +131,58 @@ export default {
         const costMax = body.cost_max ?? null;
         const qtyMin = body.qty_min ?? null;
         const qtyMax = body.qty_max ?? null;
+
+        // 仕入先DB（決定商品DB・裏取りDBとはフィールド構成が全く異なるため専用ロジック）
+        if (dbId === SHIIRE_DB_ID) {
+          const shiireFilters = [];
+          if (keyword) {
+            shiireFilters.push({ or: [
+              { property: "仕入先: 仕入先名", title: { contains: keyword } },
+              { property: "商品分類", rich_text: { contains: keyword } },
+              { property: "商品種別（集計用）", rich_text: { contains: keyword } },
+              { property: "商品詳細", rich_text: { contains: keyword } },
+            ]});
+          }
+          // 要注意仕入先はサーバー側でも除外を試みる（プロパティ型が想定と違えば下のcatchでフォールバック）
+          const excludeFlagged = { property: "要注意仕入先", select: { equals: "該当なし" } };
+          const shiireQueryBody = {
+            page_size: 50,
+            filter: shiireFilters.length > 0 ? { and: [...shiireFilters, excludeFlagged] } : excludeFlagged,
+          };
+
+          let shiireRes = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(shiireQueryBody),
+          });
+          let shiireData = await shiireRes.json();
+
+          // 「要注意仕入先」の型が想定と違う等でエラーになった場合、その条件を外してリトライする
+          // （除外自体はフロント側の変換処理でも二重に行うため安全）
+          if (shiireData.object === "error") {
+            ctx.waitUntil(logToNotion(env, "エラー", "システム", "仕入先DB検索でフィルターエラー（要注意仕入先の型を要確認）", JSON.stringify(shiireData)));
+            const fallbackBody = { page_size: 50 };
+            if (shiireFilters.length > 0) fallbackBody.filter = shiireFilters[0];
+            shiireRes = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                "Notion-Version": "2022-06-28",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(fallbackBody),
+            });
+            shiireData = await shiireRes.json();
+          }
+
+          return new Response(JSON.stringify(shiireData), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
 
         // 💡 用語メモ：
         // 裏取りDB → 仕入単価(number)・数量(number)
@@ -348,10 +401,25 @@ No.2 ...
         const { question, notionContext, history = [] } = await request.json();
 
         const systemPrompt = `あなたはTR大阪（ノベルティ・販促グッズの営業会社）の仕入先調査AIです。
-裏取りDBの情報をもとに、仕入先候補と仕様・コスト情報を案内してください。
+裏取りDB・仕入先DBの情報をもとに、仕入先候補と仕様・コスト情報を案内してください。
 
-【裏取りDBの検索結果】
+【検索結果（裏取りDB・仕入先DB）】
 ${notionContext}
+
+【情報源の優先順位】
+・裏取りDB（実際の仕入実績データ）を最優先で使う
+・裏取りDBに情報がない、または仕入先の候補を広げたい場合に仕入先DBの情報を補足として使う
+
+【仕入先DBの扱い方】
+・仕入先DBは「その仕入先がどんな商材を取り扱えるか」（業種・商品分類・商品種別・商品詳細）の情報。質問された商品を取り扱えそうな仕入先を探す時に使う
+・要注意仕入先に該当する仕入先（取引停止・反社・情報開示不可など）は絶対に紹介しない
+・コスト表がある仕入先については、初回の回答では「コスト表があります（ご希望であれば詳細もお伝えできます）」という程度に留め、更新日や格納先までは書かない。ユーザーがコスト表の詳細を求めてきた時だけ、更新日と格納先アドレスを共有する
+・仕入先の連絡先（担当者・メール・電話）は、初回の回答では書かず「連絡先が必要であればコメントください」と一言添える程度に留める。ユーザーが連絡先を求めてきた時だけ、以下のフォーマットで共有する：
+
+仕入先名：○○
+担当者：○○ ／ メール：○○ ／ 電話：○○
+（担当者②がいる場合は同じ形式でもう1行追加）
+備考：注意事項があれば記載（なければ省略）
 
 【回答ルール】
 ・マークダウン記号（**や*や#）は絶対に使わない
@@ -411,6 +479,7 @@ ${notionContext}
 
 ・決定商品DB：過去に受注・納品した商品の実績データ（商材名、売単価、数量、粗利率、仕入先、納期など）
 ・裏取りDB：仕入先ごとの商品コスト情報（商品名、仕入先会社名、仕入単価・数量ごとの単価など）
+・仕入先DB：仕入先ごとの取扱商材情報（業種、商品分類、商品種別、商品詳細）や連絡先・コスト表の有無
 
 【今回の検索で取得したデータ】
 ${notionContext}
@@ -421,6 +490,19 @@ ${notionContext}
 ・金額は必ず「仕入単価」「売単価」「数量○個時」など文脈を明示する
 ・前の会話の内容も踏まえて回答する
 
+【仕入先・仕入コストを聞かれた場合の情報源の優先順位】
+・裏取りDB（実際の仕入実績）を最優先
+・次に仕入先DB（業種・商品分類・商品種別・商品詳細から取扱可否を判断した候補）を補足として使う
+・決定商品DBの実績はその次（このデータに含まれている場合のみ）
+・要注意仕入先に該当する仕入先（取引停止・反社・情報開示不可など）は絶対に紹介しない
+・仕入先DBのコスト表は、初回の回答では「コスト表があります（ご希望であれば詳細もお伝えできます）」程度に留め、更新日や格納先は書かない。ユーザーがコスト表の詳細を求めてきた時だけ、更新日と格納先アドレスを共有する
+・仕入先DBの連絡先（担当者・メール・電話）は、初回の回答では書かず「連絡先が必要であればコメントください」と一言添える程度に留める。ユーザーが連絡先を求めてきた時だけ、以下のフォーマットで共有する：
+
+仕入先名：○○
+担当者：○○ ／ メール：○○ ／ 電話：○○
+（担当者②がいる場合は同じ形式でもう1行追加）
+備考：注意事項があれば記載（なければ省略）
+
 【仕入先・仕入コストを聞かれた場合の回答フォーマット】
 
 1行目：サマリ（例：アクリル製品の仕入先候補をご案内します。※件数は数えて言わないこと）
@@ -429,6 +511,8 @@ ${notionContext}
   ・仕入先名A
   ・仕入先名B
   ・仕入先名C（最大3社）
+・仕入先DBからの候補（取扱商材が合致するもの。あれば）
+  ・仕入先名（1〜2社）
 ・決定商品DBからの候補
   ・仕入先名（1〜2社。なければ「記録なし」）
 
@@ -441,6 +525,11 @@ ${notionContext}
   （1社につき2〜3件まで）
 ・仕入先名
   → ...
+
+＜仕入先DB＞
+・仕入先名
+  → 取扱商材：業種／商品分類／商品種別・商品詳細の要約
+  （1〜2社まで）
 
 ＜決定商品DB＞
 ・仕入先名

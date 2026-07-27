@@ -954,6 +954,7 @@ function escapeXml(str) {
 const WORKER_URL = "https://tr-notion-proxy.osk-trans52.workers.dev";
 const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
 const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
+const SHIIRE_DB_ID = "3aa562954f4381f09834d037005aba3e"; // 仕入先DB（2026年7月新設）
 
 // Notionのログ用DBにエラー・成果物イベントを送信する（送信失敗はUIに影響させない）
 function logEvent(type, feature, message, detail) {
@@ -1051,6 +1052,44 @@ function pageToText(page, type) {
   }
 }
 
+// 仕入先DBのページをテキスト化する（要注意仕入先はここでも除外＝多重防御）
+function pageToTextShiire(page) {
+  var p = page.properties;
+  var warn = (p['要注意仕入先'] && p['要注意仕入先'].select) ? p['要注意仕入先'].select.name : '該当なし';
+  if (warn && warn !== '該当なし') return null;
+
+  function rt(field) {
+    return (p[field] && p[field].rich_text && p[field].rich_text[0]) ? p[field].rich_text[0].text.content : '';
+  }
+  function emailField(field) {
+    if (p[field] && p[field].email) return p[field].email;
+    return rt(field);
+  }
+
+  var name = (p['仕入先: 仕入先名'] && p['仕入先: 仕入先名'].title && p['仕入先: 仕入先名'].title[0]) ? p['仕入先: 仕入先名'].title[0].text.content : '';
+  var industry = (p['業種'] && p['業種'].select) ? p['業種'].select.name : '';
+  var category = rt('商品分類');
+  var itemType = rt('商品種別（集計用）');
+  var detail = rt('商品詳細');
+  var staff1 = rt('仕入先担当者①');
+  var mail1 = emailField('メール①');
+  var tel1 = rt('電話番号(仕入先担当者)①');
+  var staff2 = rt('仕入先担当者②');
+  var mail2 = emailField('メール②');
+  var tel2 = rt('電話番号(仕入先担当者)②');
+  var note = rt('備考（営業編集可）');
+  var orderNote = rt('発注時注意点（営業編集可）');
+  var costSheet = (p['コスト表有無'] && p['コスト表有無'].select) ? p['コスト表有無'].select.name : '';
+  var costUpdated = rt('コスト表更新期日');
+  var costLocation = rt('コスト表格納先');
+
+  return '[仕入先DB] 仕入先名:' + name + ' 業種:' + industry + ' 商品分類:' + category + ' 商品種別:' + itemType + ' 商品詳細:' + detail +
+    ' 担当者①:' + staff1 + ' メール①:' + mail1 + ' 電話①:' + tel1 +
+    ' 担当者②:' + staff2 + ' メール②:' + mail2 + ' 電話②:' + tel2 +
+    ' 備考:' + note + ' 発注時注意点:' + orderNote +
+    ' コスト表有無:' + costSheet + ' コスト表更新日:' + costUpdated + ' コスト表格納先:' + costLocation;
+}
+
 // 💡 共通の重複排除ヘルパー
 // 同一商品名のページが複数ある場合（数量パターン違いなど）、
 // 数量が一番少ないものだけを残す。全タブ共通で使う。
@@ -1089,25 +1128,31 @@ async function sendChat() {
     var keywords = extractKeywords(question);
     var primaryKeyword = keywords[0] || '';
 
-    // 1回目：メインキーワードで検索
+    // 1回目：メインキーワードで検索（優先順位：裏取りDB→仕入先DB→決定商品DB）
     var results = await Promise.all([
-      searchNotionDB(KETTEI_DB_ID, primaryKeyword).then(function(r) { return { type: 'kettei', results: r }; }),
-      searchNotionDB(URATORI_DB_ID, primaryKeyword).then(function(r) { return { type: 'uratori', results: r }; })
+      searchNotionDB(URATORI_DB_ID, primaryKeyword).then(function(r) { return { type: 'uratori', results: r }; }),
+      searchNotionDB(SHIIRE_DB_ID, primaryKeyword).then(function(r) { return { type: 'shiire', results: r }; }),
+      searchNotionDB(KETTEI_DB_ID, primaryKeyword).then(function(r) { return { type: 'kettei', results: r }; })
     ]);
 
-    var totalHits = results[0].results.length + results[1].results.length;
+    var totalHits = results[0].results.length + results[1].results.length + results[2].results.length;
 
     // ヒット0件の場合、2番目のキーワードでリトライ
     if (totalHits === 0 && keywords.length > 1) {
       results = await Promise.all([
-        searchNotionDB(KETTEI_DB_ID, keywords[1]).then(function(r) { return { type: 'kettei', results: r }; }),
-        searchNotionDB(URATORI_DB_ID, keywords[1]).then(function(r) { return { type: 'uratori', results: r }; })
+        searchNotionDB(URATORI_DB_ID, keywords[1]).then(function(r) { return { type: 'uratori', results: r }; }),
+        searchNotionDB(SHIIRE_DB_ID, keywords[1]).then(function(r) { return { type: 'shiire', results: r }; }),
+        searchNotionDB(KETTEI_DB_ID, keywords[1]).then(function(r) { return { type: 'kettei', results: r }; })
       ]);
     }
     // ▲▲▲ 修正ここまで ▲▲▲
 
     var allData = [];
     for (var i = 0; i < results.length; i++) {
+      if (results[i].type === 'shiire') {
+        allData = allData.concat(results[i].results.slice(0, 8).map(pageToTextShiire).filter(Boolean));
+        continue;
+      }
       // 商品名重複排除（最小数量の1件のみ残す）
       var deduped = dedupePages(results[i].results, results[i].type).slice(0, 10);
       for (var j = 0; j < deduped.length; j++) {
@@ -1213,7 +1258,13 @@ async function sendSupplier() {
       supplierAllResults = results;  // 全件保持
       var firstItems = results.slice(0, SUPPLIER_PAGE_SIZE);
       supplierShownCount = firstItems.length;
-      notionContext = firstItems.map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
+      var uratoriContext = firstItems.map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
+
+      // 仕入先DBも補足情報として検索（取扱商材が合致する仕入先の候補出し用）
+      var shiireResults = await searchNotionDB(SHIIRE_DB_ID, primaryKeyword);
+      var shiireContext = shiireResults.slice(0, 8).map(pageToTextShiire).filter(Boolean).join('\n');
+
+      notionContext = [uratoriContext, shiireContext].filter(Boolean).join('\n');
       if (!notionContext) notionContext = 'データが見つかりませんでした';
     }
 
