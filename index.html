@@ -967,6 +967,11 @@ function logEvent(type, feature, message, detail) {
 
 // 会話履歴を保持する配列（最大10往復まで）
 var chatHistory = [];
+// 会話中に見つかったNotionデータを蓄積しておく配列（重複除去済みテキスト行）
+// 追加質問（「◯◯の連絡先は？」等）で、その質問文からの再検索がうまくヒットしなくても
+// 直前までに見つかった情報（コスト表格納先・連絡先など）を参照し続けられるようにする
+var chatAccumulatedData = [];
+var CHAT_ACCUMULATED_MAX = 80;
 
 // AIの回答をHTMLに変換（マークダウンを見やすく表示）
 function formatAnswer(text) {
@@ -983,6 +988,15 @@ function showPanel(id, btn) {
   document.querySelectorAll('.menu-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('panel-' + id).classList.add('active');
   btn.classList.add('active');
+}
+
+// 回答が表示された時、その回答の先頭が見える位置までスクロールする
+// （末尾までスクロールしてしまうと、長い回答を読むために毎回上に戻る必要があるため）
+function scrollMessageIntoView(container, el) {
+  if (!container || !el) return;
+  var containerRect = container.getBoundingClientRect();
+  var elRect = el.getBoundingClientRect();
+  container.scrollTop += (elRect.top - containerRect.top) - 8;
 }
 
 // ▼▼▼ ここが今回の修正ポイント ▼▼▼
@@ -1160,7 +1174,16 @@ async function sendChat() {
       }
     }
 
-    var notionContext = allData.length > 0 ? allData.join('\n') : 'データが見つかりませんでした';
+    // 今回見つかった情報を蓄積データに追加（重複除去）。追加質問で再検索がヒットしなくても
+    // 直前までに紹介した仕入先の詳細（コスト表格納先・連絡先など）を参照し続けられるようにする
+    allData.forEach(function(line) {
+      if (chatAccumulatedData.indexOf(line) === -1) chatAccumulatedData.push(line);
+    });
+    if (chatAccumulatedData.length > CHAT_ACCUMULATED_MAX) {
+      chatAccumulatedData = chatAccumulatedData.slice(-CHAT_ACCUMULATED_MAX);
+    }
+
+    var notionContext = chatAccumulatedData.length > 0 ? chatAccumulatedData.join('\n') : 'データが見つかりませんでした';
 
     var res = await fetch(WORKER_URL + '/gemini/ask', {
       method: 'POST',
@@ -1184,7 +1207,7 @@ async function sendChat() {
   }
 
   sendBtn.disabled = false;
-  messages.scrollTop = messages.scrollHeight;
+  scrollMessageIntoView(messages, messages.lastElementChild);
 }
 
 // 仕入先検索の状態管理
@@ -1192,11 +1215,13 @@ var supplierHistory = [];      // 会話履歴
 var supplierAllResults = [];   // Notionから取得した全件データ（最大100件）
 var supplierShownCount = 0;    // 現在Geminiに渡した件数
 var SUPPLIER_PAGE_SIZE = 25;   // 1回に渡す件数（重複排除後の件数なので増量）
+var supplierShiireContext = ''; // 仕入先DBの検索結果（テキスト化済み）。初回検索時に取得し、以降の全ターンで使い回す
 
 function resetSupplier() {
   supplierHistory = [];
   supplierAllResults = [];
   supplierShownCount = 0;
+  supplierShiireContext = '';
   var messages = document.getElementById('supplierMessages');
   messages.innerHTML = '<div class="message ai"><div class="bubble">仕入先を調べたい商品名・仕様を入力してください。裏取りDBから仕入先候補と仕様・コスト情報を出します。\n\n例：「アクリルスタンド」「フェイスタオル 刺繍あり」「エコバッグ 不織布」</div></div>';
   document.getElementById('supplierInput').value = '';
@@ -1232,17 +1257,21 @@ async function sendSupplier() {
         document.getElementById(loadingId).remove();
         messages.innerHTML += '<div class="message ai"><div class="bubble">これ以上データはありません。「新しく検索」ボタンで別の商品を検索できます。</div></div>';
         btn.disabled = false;
-        messages.scrollTop = messages.scrollHeight;
+        scrollMessageIntoView(messages, messages.lastElementChild);
         return;
       }
       notionContext = nextItems.map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
       supplierShownCount += nextItems.length;
+      // 仕入先DBの情報も毎ターン含める（会話の中でずっと参照できるように）
+      notionContext = [notionContext, supplierShiireContext].filter(Boolean).join('\n');
 
     // 初回 or 通常の追加質問：保持データをそのまま使う
     } else if (supplierAllResults.length > 0) {
       messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">💬 回答を生成中...</div></div>';
       // 保持済みデータの先頭15件をそのまま使う（再検索しない）
       notionContext = supplierAllResults.slice(0, supplierShownCount).map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
+      // 仕入先DBの情報も毎ターン含める（会話の中でずっと参照できるように）
+      notionContext = [notionContext, supplierShiireContext].filter(Boolean).join('\n');
 
     // 初回検索
     } else {
@@ -1260,11 +1289,11 @@ async function sendSupplier() {
       supplierShownCount = firstItems.length;
       var uratoriContext = firstItems.map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
 
-      // 仕入先DBも補足情報として検索（取扱商材が合致する仕入先の候補出し用）
+      // 仕入先DBも補足情報として検索（取扱商材が合致する仕入先の候補出し用）。以降の全ターンで使い回すため保持しておく
       var shiireResults = await searchNotionDB(SHIIRE_DB_ID, primaryKeyword);
-      var shiireContext = shiireResults.slice(0, 8).map(pageToTextShiire).filter(Boolean).join('\n');
+      supplierShiireContext = shiireResults.slice(0, 8).map(pageToTextShiire).filter(Boolean).join('\n');
 
-      notionContext = [uratoriContext, shiireContext].filter(Boolean).join('\n');
+      notionContext = [uratoriContext, supplierShiireContext].filter(Boolean).join('\n');
       if (!notionContext) notionContext = 'データが見つかりませんでした';
     }
 
@@ -1293,7 +1322,7 @@ async function sendSupplier() {
   }
 
   btn.disabled = false;
-  messages.scrollTop = messages.scrollHeight;
+  scrollMessageIntoView(messages, messages.lastElementChild);
 }
 
 // アイテム提案
