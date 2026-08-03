@@ -8,6 +8,147 @@ const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
 const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
 const SHIIRE_DB_ID = "3aa562954f4381f09834d037005aba3e"; // 仕入先DB（2026年7月新設）
 const LOG_DB_ID = "58f7f7959c814310ae9a27d5b7fcc299"; // 🪵 AIツール_ログ
+const HANSOKU_HOST = "www.hansoku-style.jp"; // 販促スタイル（自社ECサイト）。/hansoku/detailで受け取るURLはこのホストのみ許可する
+
+// 販促スタイルの検索結果ページ（HTML）から商品カードを抜き出す
+// サイト側の商品カードは <a href="https://www.hansoku-style.jp/products/detail/{ID}"> ... </a></li> という構造
+function parseHansokuSearchResults(html) {
+  const items = [];
+  const cardRe = /<a href="https:\/\/www\.hansoku-style\.jp\/products\/detail\/(\d+)">([\s\S]*?)<\/a>\s*<\/li>/g;
+  let m;
+  while ((m = cardRe.exec(html)) !== null) {
+    const id = m[1];
+    const block = m[2];
+    const nameMatch = block.match(/<h3>([^<]+)<\/h3>/);
+    if (!nameMatch) continue;
+    const imgMatch = block.match(/data-src="([^"]+)"/);
+    const priceMatch = block.match(/無地品[\s\S]{0,150}?￥([\d,]+)/);
+    const moqMatch = block.match(/最低ご注文数[\s\S]{0,60}?[：:]\s*([\d,]+)\s*個/);
+    const descMatch = block.match(/<p class="text-line3">([^<]*)<\/p>/);
+    items.push({
+      id: id,
+      name: nameMatch[1].trim(),
+      imageUrl: imgMatch ? ("https://www.hansoku-style.jp" + imgMatch[1]) : "",
+      price: priceMatch ? parseInt(priceMatch[1].replace(/,/g, ""), 10) : null,
+      moq: moqMatch ? parseInt(moqMatch[1].replace(/,/g, ""), 10) : null,
+      description: descMatch ? descMatch[1].trim() : "",
+      url: "https://www.hansoku-style.jp/products/detail/" + id,
+    });
+  }
+  return items;
+}
+
+// 商品詳細ページ（HTML）から商品情報を抜き出す
+// JSON-LD（ProductGroup）と、EC-CUBEが埋め込むeccube.classCategories（数量別価格）の両方を使う
+function parseHansokuDetail(html, url) {
+  const result = {
+    url: url,
+    name: "",
+    description: "",
+    imageUrl: "",
+    category: "",
+    material: "",
+    price: null,
+    moq: null,
+  };
+
+  // JSON-LD（ProductGroup）
+  const ldRe = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/g;
+  let ldMatch;
+  while ((ldMatch = ldRe.exec(html)) !== null) {
+    try {
+      const data = JSON.parse(ldMatch[1]);
+      if (data["@type"] === "ProductGroup") {
+        result.name = data.name || "";
+        result.description = data.description || "";
+        result.imageUrl = data.image || "";
+        result.category = (data.category || "").replace(/&gt;/g, ">");
+        result.material = data.material || "";
+      }
+    } catch (e) {
+      // JSON-LDのパース失敗は無視して次を試す
+    }
+  }
+
+  // 数量別価格（eccube.classCategories）の最初のバリエーションから税込単価を取得
+  const priceBlockMatch = html.match(/eccube\.classCategories\s*=\s*(\{[\s\S]*?\});/);
+  if (priceBlockMatch) {
+    try {
+      const classCategories = JSON.parse(priceBlockMatch[1]);
+      outer:
+      for (const k1 in classCategories) {
+        for (const k2 in classCategories[k1]) {
+          const entry = classCategories[k1][k2];
+          if (entry && entry.price01_inc_tax) {
+            result.price = parseInt(String(entry.price01_inc_tax).replace(/,/g, ""), 10);
+            break outer;
+          }
+        }
+      }
+    } catch (e) {
+      // 価格データのパース失敗は無視（priceはnullのまま）
+    }
+  }
+
+  // 最低ご注文数
+  const moqMatch = html.match(/最低ご注文数[\s\S]{0,60}?[：:]\s*([\d,]+)\s*個/);
+  if (moqMatch) result.moq = parseInt(moqMatch[1].replace(/,/g, ""), 10);
+
+  return result;
+}
+
+// 商品詳細ページ（HTML）から、見積フォームに必要な選択肢（CSRFトークン・バリエーション・
+// 印刷位置ごとの印刷方法一覧）を抜き出す
+function parseHansokuOptions(html) {
+  const result = { token: "", productClasses: [], positions: [] };
+
+  const tokenMatch = html.match(/id="_token" name="_token" value="([^"]+)"/);
+  if (tokenMatch) result.token = tokenMatch[1];
+
+  // カラー等のバリエーション（ProductClass）
+  const classRe = /<input id="class_category_(\d+)"[^>]*name="ProductClass\[\]" value="(\d+)"[^>]*>[\s\S]{0,500}?<span name="colorname1"[^>]*>\s*([^<]+?)\s*<\/span>/g;
+  let classMatch;
+  while ((classMatch = classRe.exec(html)) !== null) {
+    result.productClasses.push({ id: classMatch[2], name: classMatch[3].trim() });
+  }
+
+  // 印刷位置・印刷方法（eccube.processingMethod）。バリエーションが複数あっても構成は基本共通のため、最初の1件を使う
+  const pmMatch = html.match(/eccube\.processingMethod\s*=\s*(\{[\s\S]*?\});/);
+  if (pmMatch) {
+    try {
+      const data = JSON.parse(pmMatch[1]);
+      const firstKey = Object.keys(data)[0];
+      if (firstKey) {
+        const positionsObj = data[firstKey];
+        for (const posKey in positionsObj) {
+          const pos = positionsObj[posKey];
+          const methods = [];
+          for (const methodKey in (pos.print_method || {})) {
+            const method = pos.print_method[methodKey];
+            methods.push({ id: method.method_id, name: method.type_name });
+          }
+          result.positions.push({ id: pos.position_id, name: pos.position_name, methods: methods });
+        }
+      }
+    } catch (e) {
+      // パース失敗時はpositionsを空のまま返す（フロント側で「選択肢を取得できません」表示になる）
+    }
+  }
+
+  return result;
+}
+
+// fetchのレスポンスから複数のSet-Cookieヘッダーを name=value 形式でまとめて取り出す
+// （後続の見積APIリクエストにセッションCookieとして渡すため）
+function extractSetCookies(response) {
+  const cookies = [];
+  for (const [key, value] of response.headers) {
+    if (key.toLowerCase() === "set-cookie") {
+      cookies.push(value.split(";")[0]);
+    }
+  }
+  return cookies.join("; ");
+}
 
 // ArrayBufferをBase64に変換する（大きな画像でもスタックオーバーフローしないようチャンク処理）
 function arrayBufferToBase64(buffer) {
@@ -116,6 +257,176 @@ export default {
           });
         } catch (e) {
           ctx.waitUntil(logToNotion(env, "エラー", "資料作成", "商品画像の取得に失敗", e.message + " url:" + imageUrl));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 販促スタイル：キーワード・価格帯で商品検索
+      if (path === "/hansoku/search" && request.method === "POST") {
+        const { keyword, priceMin, priceMax } = await request.json();
+        try {
+          const listUrl = new URL("https://" + HANSOKU_HOST + "/products/list");
+          if (keyword) listUrl.searchParams.set("name", keyword);
+          if (priceMin) listUrl.searchParams.set("price_from", String(priceMin));
+          if (priceMax) listUrl.searchParams.set("price_to", String(priceMax));
+
+          const res = await fetch(listUrl.toString());
+          if (!res.ok) throw new Error("販促スタイルの検索に失敗しました（status:" + res.status + "）");
+          const html = await res.text();
+          const items = parseHansokuSearchResults(html).slice(0, 20);
+
+          ctx.waitUntil(logToNotion(env, "検索", "販促スタイル", "キーワード:" + (keyword || "（指定なし）"), "件数:" + items.length));
+          return new Response(JSON.stringify({ items }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "販促スタイル", "検索に失敗", e.message));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 販促スタイル：商品詳細URLを指定して1件分の情報を取得
+      if (path === "/hansoku/detail" && request.method === "POST") {
+        const { url: productUrl } = await request.json();
+        try {
+          let parsedUrl;
+          try {
+            parsedUrl = new URL(productUrl);
+          } catch (e) {
+            throw new Error("URLの形式が正しくありません");
+          }
+          if (parsedUrl.hostname !== HANSOKU_HOST || parsedUrl.protocol !== "https:") {
+            throw new Error("hansoku-style.jpの商品ページURLのみ対応しています");
+          }
+
+          const res = await fetch(parsedUrl.toString());
+          if (!res.ok) throw new Error("商品ページの取得に失敗しました（status:" + res.status + "）");
+          const html = await res.text();
+          const item = parseHansokuDetail(html, parsedUrl.toString());
+          if (!item.name) throw new Error("商品情報を読み取れませんでした（ページ構造が変わった可能性があります）");
+
+          ctx.waitUntil(logToNotion(env, "検索", "販促スタイル", "URL指定：" + item.name, productUrl));
+          return new Response(JSON.stringify({ item }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "販促スタイル", "URL指定の取得に失敗", e.message + " url:" + productUrl));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 販促スタイル：見積フォームの選択肢（カラー等のバリエーション・印刷位置ごとの印刷方法）を取得
+      if (path === "/hansoku/options" && request.method === "POST") {
+        const { url: productUrl } = await request.json();
+        try {
+          let parsedUrl;
+          try {
+            parsedUrl = new URL(productUrl);
+          } catch (e) {
+            throw new Error("URLの形式が正しくありません");
+          }
+          if (parsedUrl.hostname !== HANSOKU_HOST || parsedUrl.protocol !== "https:") {
+            throw new Error("hansoku-style.jpの商品ページURLのみ対応しています");
+          }
+
+          const res = await fetch(parsedUrl.toString());
+          if (!res.ok) throw new Error("商品ページの取得に失敗しました（status:" + res.status + "）");
+          const html = await res.text();
+          const detail = parseHansokuDetail(html, parsedUrl.toString());
+          const options = parseHansokuOptions(html);
+          if (!detail.name) throw new Error("商品情報を読み取れませんでした（ページ構造が変わった可能性があります）");
+
+          return new Response(JSON.stringify({ detail, options }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "販促スタイル", "選択肢の取得に失敗", e.message + " url:" + productUrl));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 販促スタイル：選択された印刷位置・印刷方法・数量をもとに、サイトの見積APIで実際の価格を計算する
+      if (path === "/hansoku/quote" && request.method === "POST") {
+        const { url: productUrl, productId, productClassId, quantity, selections } = await request.json();
+        try {
+          let parsedUrl;
+          try {
+            parsedUrl = new URL(productUrl);
+          } catch (e) {
+            throw new Error("URLの形式が正しくありません");
+          }
+          if (parsedUrl.hostname !== HANSOKU_HOST || parsedUrl.protocol !== "https:") {
+            throw new Error("hansoku-style.jpの商品ページURLのみ対応しています");
+          }
+          if (!productClassId || !quantity || !Array.isArray(selections) || selections.length === 0) {
+            throw new Error("商品バリエーション・数量・印刷位置/方法の指定が不足しています");
+          }
+
+          // 見積APIの呼び出しにはCSRFトークンとセッションCookieが必要なため、まず商品ページに
+          // 改めてアクセスして新鮮なものを取得する（トークンはページ読み込みごとに変わるため）
+          const pageRes = await fetch(parsedUrl.toString());
+          if (!pageRes.ok) throw new Error("商品ページの取得に失敗しました（status:" + pageRes.status + "）");
+          const html = await pageRes.text();
+          const options = parseHansokuOptions(html);
+          if (!options.token) throw new Error("見積フォームのトークンを取得できませんでした");
+          const cookie = extractSetCookies(pageRes);
+
+          const today = new Date();
+          const scheduled = today.getFullYear() + "/" + String(today.getMonth() + 1).padStart(2, "0") + "/" + String(today.getDate()).padStart(2, "0");
+
+          const form = new URLSearchParams();
+          form.set("is_download", "0");
+          form.set("processing", "1");
+          form.set("is_sample", "0");
+          form.append("ProductClass[]", String(productClassId));
+          form.set("quantity[" + productClassId + "]", String(quantity));
+          form.set("total_quantity", String(quantity));
+          selections.forEach(function (sel) {
+            form.append("position[]", String(sel.positionId));
+            form.set("method[" + sel.positionId + "]", String(sel.methodId));
+          });
+          form.set("change_color_type", "0");
+          form.set("proofreading", "0");
+          form.set("proofreading_scheduled", "1");
+          form.set("quick_print", "0");
+          form.set("scheduled", scheduled);
+          form.set("_token", options.token);
+          form.set("product_id", String(productId));
+          form.set("hasDesign", "0");
+
+          const quoteRes = await fetch("https://" + HANSOKU_HOST + "/product/easy_quote", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "Cookie": cookie,
+            },
+            body: form.toString(),
+          });
+          const quoteData = await quoteRes.json();
+
+          if (quoteData.status === "error") {
+            const messages = Object.values(quoteData.data && quoteData.data.errors || {}).map(function (er) { return er.message; }).join(" / ");
+            throw new Error(messages || "見積の計算に失敗しました");
+          }
+
+          ctx.waitUntil(logToNotion(env, "検索", "販促スタイル", "見積計算：" + productUrl, JSON.stringify({ productClassId: productClassId, quantity: quantity, selections: selections })));
+          return new Response(JSON.stringify({ quote: quoteData.data }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "販促スタイル", "見積計算に失敗", e.message + " url:" + productUrl));
           return new Response(JSON.stringify({ error: e.message }), {
             status: 500,
             headers: { ...CORS_HEADERS, "Content-Type": "application/json" },

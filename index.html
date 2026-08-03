@@ -180,7 +180,7 @@ function openPptxModal(fmtType) {
   document.getElementById('card2').classList.remove('selected');
 
   // 選択アイテム確認
-  var tab = fmtType === 'item' ? 'suggest' : 'report';
+  var tab = fmtType === 'jisseki' ? 'report' : (fmtType === 'hansoku' ? 'hansoku' : 'suggest');
   var selectedItems = getSelectedItems(tab);
   if (selectedItems.length === 0) {
     alert('商品が選択されていません。チェックボックスで資料に含める商品を選んでください。');
@@ -255,7 +255,7 @@ async function generatePptx() {
   }
 
   // 選択されたアイテムを取得
-  var tab = currentFmtType === 'item' ? 'suggest' : 'report';
+  var tab = currentFmtType === 'jisseki' ? 'report' : (currentFmtType === 'hansoku' ? 'hansoku' : 'suggest');
   var items = getSelectedItems(tab);
   if (items.length === 0) { alert('商品が選択されていません。'); return; }
 
@@ -278,15 +278,15 @@ async function generatePptx() {
       memoTexts = memoData.memoTexts || [];
     }
     
-    // FMTはindex.html内のBase64を使用
-    var fmtB64 = currentFmtType === 'item' ? FMT_ITEM_B64 : FMT_JISSEKI_B64;
-    
+    // FMTはindex.html内のBase64を使用（販促スタイルは専用FMT未整備のためアイテム提案用FMTを仮流用）
+    var fmtB64 = currentFmtType === 'jisseki' ? FMT_JISSEKI_B64 : FMT_ITEM_B64;
+
     // JSZipでパワポを書き換えてダウンロード
     await modifyAndDownloadPptx(fmtB64, memoTexts, {
       title, date, staffName, staffPhone, staffEmail, items
     });
 
-    var fmtLabelForLog = currentFmtType === 'item' ? 'アイテムご提案資料' : '実績ご紹介資料';
+    var fmtLabelForLog = currentFmtType === 'jisseki' ? '実績ご紹介資料' : (currentFmtType === 'hansoku' ? '販促スタイル提案資料（仮FMT）' : 'アイテムご提案資料');
     var slideTypeLabel = currentSlideType === '6' ? '画像メイン' : '詳細紹介';
     logEvent('成果物', '資料作成', title + '（' + fmtLabelForLog + '／' + slideTypeLabel + '）', 'アイテム数:' + items.length);
 
@@ -815,6 +815,11 @@ function escapeXml(str) {
       <h3>実績資料</h3>
       <p>条件をもとに決定商品データをまとめる</p>
     </button>
+    <button class="menu-btn" onclick="showPanel('hansoku', this)">
+      <div class="icon">🛍️</div>
+      <h3>販促スタイル</h3>
+      <p>自社ECサイトの商品を検索・資料化（β）</p>
+    </button>
   </div>
 
   <div class="panel active" id="panel-chat">
@@ -946,6 +951,74 @@ function escapeXml(str) {
     </div>
     <div id="reportCreateRow" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
       <button onclick="openPptxModal('jisseki')" style="padding:10px 24px;background:#059669;color:white;border:none;border-radius:8px;font-size:14px;cursor:pointer;">📊 この結果で実績資料を作成</button>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-hansoku">
+    <h2>🛍️ 販促スタイル（β）</h2>
+    <p style="font-size:12px;color:#888;margin-bottom:16px;">
+      ※自社ECサイト「販促スタイル」の商品を検索・資料化する機能です。試験運用中のため、価格は仮の掛け率（÷0.65）で計算しています。資料デザインもアイテム提案用のFMTを仮流用しています。
+    </p>
+
+    <div class="form-section">
+      <label>キーワード</label>
+      <input type="text" id="hansokuKeyword" placeholder="例：タンブラー、エコバッグ" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none;" />
+    </div>
+
+    <div class="form-section">
+      <label>価格帯（円）</label>
+      <div class="form-row">
+        <input type="number" id="hansokuPriceMin" placeholder="下限" min="0" />
+        <span>〜</span>
+        <input type="number" id="hansokuPriceMax" placeholder="上限" min="0" />
+        <span>円</span>
+      </div>
+    </div>
+
+    <div class="form-btn-row">
+      <button onclick="sendHansokuSearch()" id="hansokuSearchBtn">検索</button>
+      <button onclick="resetHansoku()" class="reset-btn" style="margin-left:auto;">リセット</button>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin:20px 0;color:#999;font-size:12px;">
+      <div style="flex:1;border-top:1px solid #eee;"></div>
+      または
+      <div style="flex:1;border-top:1px solid #eee;"></div>
+    </div>
+
+    <div class="form-section">
+      <label>商品ページURLを直接指定（見積依頼対応など）</label>
+      <div class="form-row">
+        <input type="text" id="hansokuUrl" placeholder="https://www.hansoku-style.jp/products/detail/xxxxx" style="flex:1;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none;" />
+        <button onclick="sendHansokuUrl()" id="hansokuUrlBtn">このURLの商品を取得</button>
+      </div>
+    </div>
+
+    <div class="suggest-results" id="hansokuResults"></div>
+
+    <!-- URL指定：印刷位置・方法を選んで正式な見積を出すエリア（商品情報取得後に表示） -->
+    <div id="hansokuOptionsArea" style="display:none;margin-top:16px;border:1px solid #eee;border-radius:8px;padding:16px;background:#fafafa;">
+      <div class="form-section">
+        <label>カラー</label>
+        <select id="hansokuColorSelect" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:8px;font-size:14px;"></select>
+      </div>
+      <div class="form-section">
+        <label>数量（個）</label>
+        <input type="number" id="hansokuQuantity" min="1" style="width:140px;padding:8px 10px;border:1px solid #ddd;border-radius:8px;font-size:14px;" />
+      </div>
+      <div class="form-section">
+        <label>印刷位置・印刷方法</label>
+        <div id="hansokuPositionsArea"></div>
+      </div>
+      <div class="form-btn-row">
+        <button onclick="calculateHansokuQuote()" id="hansokuQuoteBtn">この内容で見積を計算</button>
+      </div>
+      <div id="hansokuQuoteResult" style="margin-top:12px;font-size:13px;"></div>
+    </div>
+
+    <div id="hansokuCheckList" style="display:none;margin-top:12px;"></div>
+    <div id="hansokuCreateRow" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
+      <button onclick="openPptxModal('hansoku')" style="padding:10px 24px;background:#059669;color:white;border:none;border-radius:8px;font-size:14px;cursor:pointer;">📊 この結果で提案書を作成</button>
     </div>
   </div>
 </div>
@@ -1605,6 +1678,260 @@ async function sendReportMore() {
   }
 }
 
+// ========== 販促スタイル（β） ==========
+// 販促スタイルの商品データ（{name, price, moq, imageUrl, ...}）を、資料作成パイプラインで
+// 使える共通のitem形状に変換する。
+// ※cost=無地品参考単価。calcRefPriceで他タブと同じ÷0.65markupを仮適用するため、
+//   実際にサイトへ掲載されている価格より高い数字が資料に出る点に注意（掛け率が未確定なための仮措置）
+function hansokuToItem(p) {
+  return {
+    name: p.name || '',
+    cost: p.price || null,
+    qty: p.moq || null,
+    supplier: '販促スタイル',
+    date: '',
+    imageUrl: p.imageUrl || '',
+    isKettei: false
+  };
+}
+
+// チェックリストを構造化データから直接描画する（他タブと違いGemini回答テキストの解析を経由しない）
+function renderHansokuCheckList(items) {
+  var listId = 'hansokuCheckList';
+  var container = document.getElementById(listId);
+  if (!container) return;
+  if (items.length === 0) { container.style.display = 'none'; return; }
+
+  var html = '<div class="check-list">';
+  html += '<div class="check-list-header">';
+  html += '<span>資料に含める商品を選択してください</span>';
+  html += '<button onclick="toggleAllCheck(\'' + listId + '\', true)">全選択</button>';
+  html += ' / <button onclick="toggleAllCheck(\'' + listId + '\', false)">全解除</button>';
+  html += '</div>';
+
+  items.forEach(function(item, i) {
+    var priceText = item.cost ? '資料表記' + calcRefPrice(item.cost) + '円程度（仮の掛け率）' : '要確認';
+    var qtyText = item.qty ? item.qty + '個〜' : '要確認';
+    html += '<div class="check-item">';
+    html += '<input type="checkbox" id="chk_' + listId + '_' + i + '">';
+    html += '<label for="chk_' + listId + '_' + i + '">';
+    html += '<strong>' + (item.name || '商品名不明') + '</strong>';
+    html += ' <span style="color:#888;font-size:12px;">（販促スタイル / 最低' + qtyText + ' / ' + priceText + '）</span>';
+    html += '</label>';
+    html += '</div>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+  container.style.display = 'block';
+  container._items = items;
+}
+
+function resetHansoku() {
+  document.getElementById('hansokuKeyword').value = '';
+  document.getElementById('hansokuPriceMin').value = '';
+  document.getElementById('hansokuPriceMax').value = '';
+  document.getElementById('hansokuUrl').value = '';
+  var results = document.getElementById('hansokuResults');
+  results.classList.remove('active');
+  results.innerHTML = '';
+  document.getElementById('hansokuCheckList').style.display = 'none';
+  document.getElementById('hansokuCreateRow').style.display = 'none';
+}
+
+async function sendHansokuSearch() {
+  var keyword = document.getElementById('hansokuKeyword').value.trim();
+  var priceMin = document.getElementById('hansokuPriceMin').value;
+  var priceMax = document.getElementById('hansokuPriceMax').value;
+  if (!keyword && !priceMin && !priceMax) {
+    alert('キーワードまたは価格帯を入力してください。');
+    return;
+  }
+
+  var btn = document.getElementById('hansokuSearchBtn');
+  var results = document.getElementById('hansokuResults');
+  btn.disabled = true;
+  results.classList.add('active');
+  results.innerHTML = '🔍 販促スタイルを検索中...';
+  document.getElementById('hansokuCheckList').style.display = 'none';
+  document.getElementById('hansokuCreateRow').style.display = 'none';
+
+  try {
+    var res = await fetch(WORKER_URL + '/hansoku/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keyword: keyword,
+        priceMin: priceMin ? parseInt(priceMin) : null,
+        priceMax: priceMax ? parseInt(priceMax) : null
+      })
+    });
+    var data = await res.json();
+    if (data.error) throw new Error(data.error);
+    var products = data.items || [];
+
+    if (products.length === 0) {
+      results.innerHTML = '該当する商品が見つかりませんでした。';
+      return;
+    }
+
+    results.innerHTML = products.length + '件の商品が見つかりました（価格・数量は確認用の目安です。詳細はサイトでご確認ください）。';
+    var items = products.map(hansokuToItem);
+    renderHansokuCheckList(items);
+    document.getElementById('hansokuCreateRow').style.display = 'block';
+  } catch (e) {
+    results.innerHTML = 'エラー: ' + e.message;
+    logEvent('エラー', '販促スタイル', e.message, e.stack || '');
+  }
+
+  btn.disabled = false;
+}
+
+// 現在URL指定で取得中の商品情報（見積計算時に再利用する）
+var hansokuCurrentUrl = '';
+var hansokuCurrentDetail = null;
+
+async function sendHansokuUrl() {
+  var url = document.getElementById('hansokuUrl').value.trim();
+  if (!url) { alert('商品ページのURLを入力してください。'); return; }
+
+  var btn = document.getElementById('hansokuUrlBtn');
+  var results = document.getElementById('hansokuResults');
+  btn.disabled = true;
+  results.classList.add('active');
+  results.innerHTML = '🔍 商品ページを取得中...';
+  document.getElementById('hansokuOptionsArea').style.display = 'none';
+  document.getElementById('hansokuQuoteResult').innerHTML = '';
+  document.getElementById('hansokuCheckList').style.display = 'none';
+  document.getElementById('hansokuCreateRow').style.display = 'none';
+
+  try {
+    var res = await fetch(WORKER_URL + '/hansoku/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url })
+    });
+    var data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    hansokuCurrentUrl = url;
+    hansokuCurrentDetail = data.detail;
+    results.innerHTML = '「' + data.detail.name + '」の情報を取得しました。印刷位置・方法を選んで見積を計算してください。';
+
+    if (!data.options.positions || data.options.positions.length === 0) {
+      results.innerHTML += '<br>※印刷オプションの選択肢を読み取れませんでした（ページ構造が想定と異なる可能性があります）。';
+      return;
+    }
+
+    // カラー選択
+    var colorSelect = document.getElementById('hansokuColorSelect');
+    colorSelect.innerHTML = data.options.productClasses.map(function(c) {
+      return '<option value="' + c.id + '">' + c.name + '</option>';
+    }).join('');
+
+    // 数量（最低ご注文数を初期値にする）
+    document.getElementById('hansokuQuantity').value = data.detail.moq || 1;
+
+    // 印刷位置・印刷方法
+    var positionsArea = document.getElementById('hansokuPositionsArea');
+    positionsArea.innerHTML = data.options.positions.map(function(pos) {
+      var methodOptions = pos.methods.map(function(m) {
+        return '<option value="' + m.id + '">' + m.name + '</option>';
+      }).join('');
+      return '<div class="check-item" style="align-items:center;">' +
+        '<input type="checkbox" id="hansoku_pos_' + pos.id + '" data-position-id="' + pos.id + '">' +
+        '<label for="hansoku_pos_' + pos.id + '" style="flex-shrink:0;">' + pos.name + '</label>' +
+        '<select id="hansoku_method_' + pos.id + '" style="margin-left:8px;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:13px;">' + methodOptions + '</select>' +
+        '</div>';
+    }).join('');
+
+    document.getElementById('hansokuOptionsArea').style.display = 'block';
+  } catch (e) {
+    results.innerHTML = 'エラー: ' + e.message;
+    logEvent('エラー', '販促スタイル', e.message, e.stack || '');
+  }
+
+  btn.disabled = false;
+}
+
+async function calculateHansokuQuote() {
+  var btn = document.getElementById('hansokuQuoteBtn');
+  var resultBox = document.getElementById('hansokuQuoteResult');
+
+  var productClassId = document.getElementById('hansokuColorSelect').value;
+  var quantity = parseInt(document.getElementById('hansokuQuantity').value, 10);
+  if (!quantity || quantity < 1) { alert('数量を入力してください。'); return; }
+
+  var selections = [];
+  document.querySelectorAll('#hansokuPositionsArea input[type="checkbox"]').forEach(function(cb) {
+    if (cb.checked) {
+      var posId = cb.getAttribute('data-position-id');
+      var methodId = document.getElementById('hansoku_method_' + posId).value;
+      selections.push({ positionId: posId, methodId: methodId });
+    }
+  });
+  if (selections.length === 0) { alert('印刷する位置を1つ以上選んでください。'); return; }
+
+  btn.disabled = true;
+  resultBox.innerHTML = '🧮 見積を計算中...';
+
+  try {
+    var productId = (hansokuCurrentUrl.match(/\/products\/detail\/(\d+)/) || [])[1] || '';
+    var res = await fetch(WORKER_URL + '/hansoku/quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: hansokuCurrentUrl,
+        productId: productId,
+        productClassId: productClassId,
+        quantity: quantity,
+        selections: selections
+      })
+    });
+    var data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    var quote = data.quote;
+    var colorName = document.getElementById('hansokuColorSelect').selectedOptions[0].textContent;
+    var specParts = selections.map(function(sel) {
+      var methodSelect = document.getElementById('hansoku_method_' + sel.positionId);
+      var posLabel = document.querySelector('label[for="hansoku_pos_' + sel.positionId + '"]').textContent;
+      return posLabel + '：' + methodSelect.selectedOptions[0].textContent;
+    }).join('／');
+    var specText = 'カラー：' + colorName + '／' + specParts;
+
+    resultBox.innerHTML =
+      '<div style="background:#eef3f8;border-radius:8px;padding:12px;">' +
+      '<div><strong>' + specText + '</strong>／数量：' + quantity + '個</div>' +
+      '<div style="margin-top:6px;">合計（税込）：<strong>' + quote.total_tax_inc_amount + '</strong>　' + (quote.per_price || '') + '</div>' +
+      '</div>';
+
+    // 見積結果をitem化してチェックリストへ（掛け率は他タブと同じ÷0.65を仮適用。見積は既にサイトの掲載価格なので、
+    // 掛け率不要ならcalcRefPrice側の仕様が決まり次第見直す）
+    var totalAmount = parseInt(String(quote.total_tax_inc_amount).replace(/[^\d]/g, ''), 10) || 0;
+    var perUnit = quantity > 0 ? Math.round(totalAmount / quantity) : totalAmount;
+    var item = {
+      name: (hansokuCurrentDetail.name || '') + '（' + specText + '）',
+      cost: perUnit,
+      qty: quantity,
+      supplier: '販促スタイル',
+      date: '',
+      imageUrl: hansokuCurrentDetail.imageUrl || '',
+      isKettei: false
+    };
+    renderHansokuCheckList([item]);
+    var cb0 = document.getElementById('chk_hansokuCheckList_0');
+    if (cb0) cb0.checked = true;
+    document.getElementById('hansokuCreateRow').style.display = 'block';
+
+    logEvent('検索', '販促スタイル', '見積計算：' + item.name, '数量:' + quantity + ' 合計:' + quote.total_tax_inc_amount);
+  } catch (e) {
+    resultBox.innerHTML = 'エラー: ' + e.message;
+    logEvent('エラー', '販促スタイル', e.message, e.stack || '');
+  }
+
+  btn.disabled = false;
+}
+
 
 // チェックリストを構築
 // 検索結果テキストに反映済みの件数（shownCount）までに絞る。「もっと見せて」で増えた分だけ追従する
@@ -1659,8 +1986,16 @@ function toggleAllCheck(listId, checked) {
   container.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { cb.checked = checked; });
 }
 
+// タブ名→チェックリストのcontainer IDの対応表（資料作成対象タブが増えたらここに追加する）
+function tabToCheckListId(tab) {
+  if (tab === 'suggest') return 'suggestCheckList';
+  if (tab === 'report') return 'reportCheckList';
+  if (tab === 'hansoku') return 'hansokuCheckList';
+  return null;
+}
+
 function getSelectedItems(tab) {
-  var listId = tab === 'suggest' ? 'suggestCheckList' : 'reportCheckList';
+  var listId = tabToCheckListId(tab);
   var container = document.getElementById(listId);
   if (!container || !container._items) return [];
   return container._items.filter(function(item, i) {
