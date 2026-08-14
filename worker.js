@@ -9,6 +9,95 @@ const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
 const SHIIRE_DB_ID = "3aa562954f4381f09834d037005aba3e"; // 仕入先DB（2026年7月新設）
 const LOG_DB_ID = "58f7f7959c814310ae9a27d5b7fcc299"; // 🪵 AIツール_ログ
 const HANSOKU_HOST = "www.hansoku-style.jp"; // 販促スタイル（自社ECサイト）。/hansoku/detailで受け取るURLはこのホストのみ許可する
+const INDUSTRY_TAG_DB_ID = "a40b458220624bb3913ad77dbdfd0272"; // 取引先業界タグ付けDB（2026年8月新設）
+
+// Notion APIは短時間に連続で叩くと429（レート制限）が返ることがあるため、
+// 大量の逐次書き込みを行う処理（マスタ同期等）ではこのリトライ付きfetchを使う。
+async function fetchNotionWithRetry(url, options) {
+  const MAX_RETRIES = 3;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(url, options);
+    if (res.status !== 429) return res;
+    const retryAfter = Number(res.headers.get("Retry-After")) || 1;
+    if (attempt < MAX_RETRIES) await new Promise((r) => setTimeout(r, (retryAfter * 1000) + 200));
+  }
+  return fetch(url, options);
+}
+
+// 業界タグ19分類（決定商品DB・取引先業界タグ付けDBのマルチセレクト選択肢と一致させること）
+const INDUSTRY_TAGS = [
+  "アニメ・キャラクターIP", "舞台・2.5次元", "ゲーム", "音楽・アーティスト・アイドル",
+  "VTuber・配信者・オンラインサービス", "スポーツチーム", "テーマパーク", "アパレル・ファッション",
+  "飲料・食品", "化粧品・薬品", "外食", "金融・カード・保険・不動産", "自動車・車関連品",
+  "製造（エネルギー・機械・素材）", "鉄道・交通機関", "教育・医療", "流通・小売", "旅行・宿泊", "官公庁・団体",
+  "趣味･スポーツ用品・一般消費材メーカー",
+];
+
+// 会社名だけ・会社形態だけのような、突合の手がかりにならない不完全なマスタ行を弾くための法人格トークン
+const LEGAL_FORM_TOKENS = [
+  "株式会社", "有限会社", "合同会社", "合資会社", "合名会社", "一般社団法人", "公益財団法人",
+  "一般財団法人", "協同組合", "生活協同組合", "特定非営利活動法人", "Ｉｎｃ", "Inc", "Ｌｔｄ", "Ltd", "ＬＬＣ", "LLC", "Ｃｏ", "Co", "Corporation", "Corp",
+];
+const MIN_CORE_NAME_LEN = 3;
+
+// 全角/半角の揺れ・空白・括弧書き（子取引先）などのノイズを除去し、突合しやすい形に正規化する
+function normalizeCompanyName(s) {
+  let n = String(s || "").normalize("NFKC").replace(/[　\s]/g, "");
+  n = n.replace(/[（(].*?[）)]/g, "");
+  n = n.replace(/[，,．.]/g, "");
+  return n;
+}
+
+// 正規化済み文字列から法人格トークンを除いた「会社の核となる名称」を取り出す
+function coreCompanyName(normalized) {
+  let core = normalized;
+  for (const token of LEGAL_FORM_TOKENS) core = core.split(token).join("");
+  return core;
+}
+
+// 取引先業界タグ付けDBのマスタ一覧と、決定商品DB側の取引先名（部署名等が付与されていることが多い）を
+// あいまい一致（正規化後の部分文字列マッチ）で突合する。マスタ側は核名称が短すぎる行を除外し、
+// 複数マッチした場合は最も具体的（＝正規化後の文字列が長い）行を優先する。
+function matchIndustryTag(masterList, decisionDbName) {
+  const normalizedDecisionName = normalizeCompanyName(decisionDbName);
+  let best = null;
+  for (const m of masterList) {
+    if (m.core.length < MIN_CORE_NAME_LEN) continue;
+    if (!normalizedDecisionName.includes(m.norm)) continue;
+    if (!best || m.norm.length > best.norm.length) best = m;
+  }
+  return best ? best.tag : null;
+}
+
+// 取引先業界タグ付けDBの全件を取得し、突合用に正規化した形で返す
+async function fetchIndustryTagMaster(env) {
+  const master = [];
+  let cursor = undefined;
+  do {
+    const body = { page_size: 100 };
+    if (cursor) body.start_cursor = cursor;
+    const res = await fetch(`https://api.notion.com/v1/databases/${INDUSTRY_TAG_DB_ID}/query`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.object === "error") throw new Error("取引先業界タグ付けDBの取得に失敗: " + JSON.stringify(data));
+    for (const page of data.results || []) {
+      const name = page.properties?.["取引先名"]?.title?.[0]?.plain_text || "";
+      const tags = (page.properties?.["業界タグ"]?.multi_select || []).map((t) => t.name);
+      if (!name || tags.length === 0) continue;
+      const norm = normalizeCompanyName(name);
+      master.push({ name, tag: tags[0], norm, core: coreCompanyName(norm) });
+    }
+    cursor = data.has_more ? data.next_cursor : undefined;
+  } while (cursor);
+  return master;
+}
 
 // 販促スタイルの検索結果ページ（HTML）から商品カードを抜き出す
 // サイト側の商品カードは <a href="https://www.hansoku-style.jp/products/detail/{ID}"> ... </a></li> という構造
@@ -223,7 +312,139 @@ async function callGemini(env, contents) {
   return data;
 }
 
+// 業界タグ機能：本実装（バックフィル／Cronで共通利用するロジック本体）。
+// 決定商品DBの「業界タグ処理済み」がOFFの商品を1バッチ分取得し、取引先名ベースでタグを解決して書き込む。
+// 1. マスタDBと突合（対応表）→一致すればそれを採用
+// 2. マスタに無い社名だけ、Geminiに社名のみ渡してバッチ判定（分からなければ空欄）
+// 3. AI判定した社名はマスタDBに追記（次回以降は対応表として再利用できる）
+// 4. バッチ内の全商品ページに業界タグを書き込み、業界タグ処理済み=trueにする（空欄でも処理済みにする）
+async function runIndustryTagBatch(env, ctx, batchSize) {
+  const master = await fetchIndustryTagMaster(env);
+
+  const queryBody = {
+    page_size: batchSize,
+    filter: { property: "業界タグ処理済み", checkbox: { equals: false } },
+  };
+  const listRes = await fetchNotionWithRetry(`https://api.notion.com/v1/databases/${KETTEI_DB_ID}/query`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+      "Notion-Version": "2022-06-28",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(queryBody),
+  });
+  const listData = await listRes.json();
+  if (listData.object === "error") throw new Error("決定商品DBの取得に失敗: " + JSON.stringify(listData));
+
+  const targets = (listData.results || []).map((page) => ({
+    pageId: page.id,
+    name: page.properties?.["取引先名"]?.rich_text?.[0]?.plain_text || "",
+  }));
+
+  if (targets.length === 0) {
+    return { done: true, processed: 0, tagged: 0, empty: 0, failed: 0, ai_new_master_entries: 0 };
+  }
+
+  // このバッチ内でのユニーク社名だけ解決する（同名商品が複数あっても1回で済ませる）
+  const nameToTag = new Map(); // name -> tag（nullは「判定したが該当なし」）
+  const uniqueNames = [...new Set(targets.map((t) => t.name).filter(Boolean))];
+  const unresolvedNames = [];
+  for (const name of uniqueNames) {
+    const tag = matchIndustryTag(master, name);
+    if (tag) nameToTag.set(name, tag);
+    else unresolvedNames.push(name);
+  }
+
+  let aiNewMasterEntries = 0;
+  if (unresolvedNames.length > 0) {
+    const prompt = `以下は法人・団体名のリストです。それぞれについて、次の20分類のうち最も近いものを1つ選んでください。\n` +
+      `【重要】判断材料は会社名・団体名そのものだけです。商品の内容や業種の一般知識から推測してよいですが、Web検索は行わず、あなたの既存知識のみで判断してください。\n` +
+      `会社名から業界が明確に判断できない場合は、無理に推測せず tag を空文字("")にしてください（厳しめに判定すること）。\n\n` +
+      `【20分類】\n${INDUSTRY_TAGS.join("、")}\n\n` +
+      `【出力形式】他の説明文は一切含めず、以下のJSON配列のみを出力してください。\n` +
+      `[{"name":"元の会社名","tag":"分類名またはtagが不明な場合は空文字"}]\n\n` +
+      `【対象リスト】\n${unresolvedNames.map((n) => "・" + n).join("\n")}`;
+
+    const geminiData = await callGemini(env, [{ role: "user", parts: [{ text: prompt }] }]);
+    const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    let aiResults = [];
+    try {
+      const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+      aiResults = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+    } catch (e) {
+      ctx.waitUntil(logToNotion(env, "エラー", "業界タグ", "Gemini判定結果のJSON解析に失敗", rawText.slice(0, 500)));
+    }
+    const aiTagByName = new Map(aiResults.filter((r) => r && r.name).map((r) => [r.name, INDUSTRY_TAGS.includes(r.tag) ? r.tag : null]));
+
+    for (const name of unresolvedNames) {
+      const tag = aiTagByName.has(name) ? aiTagByName.get(name) : null;
+      nameToTag.set(name, tag);
+      // 判定できた（空欄でない）分だけマスタに追記し、次回以降は対応表で即決定できるようにする
+      if (tag) {
+        try {
+          await fetchNotionWithRetry("https://api.notion.com/v1/pages", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              parent: { database_id: INDUSTRY_TAG_DB_ID },
+              properties: {
+                "取引先名": { title: [{ text: { content: name } }] },
+                "業界タグ": { multi_select: [{ name: tag }] },
+                "判定方法": { select: { name: "AI判定" } },
+              },
+            }),
+          });
+          aiNewMasterEntries++;
+        } catch (e) { /* マスタ追記の失敗は致命的ではないためベストエフォート */ }
+      }
+    }
+  }
+
+  let tagged = 0, empty = 0, failed = 0;
+  for (const target of targets) {
+    const tag = target.name ? nameToTag.get(target.name) : null;
+    try {
+      const properties = { "業界タグ処理済み": { checkbox: true } };
+      if (tag) properties["業界タグ"] = { multi_select: [{ name: tag }] };
+      const res = await fetchNotionWithRetry(`https://api.notion.com/v1/pages/${target.pageId}`, {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+          "Notion-Version": "2022-06-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ properties }),
+      });
+      const data = await res.json();
+      if (data.object === "error") throw new Error(JSON.stringify(data));
+      if (tag) tagged++; else empty++;
+    } catch (e) {
+      failed++;
+      ctx.waitUntil(logToNotion(env, "エラー", "業界タグ", "商品への書き込みに失敗: " + target.name, e.message.slice(0, 500)));
+    }
+  }
+
+  ctx.waitUntil(logToNotion(env, "検索", "業界タグ", "バックフィル実行", `処理:${targets.length} タグ付:${tagged} 空欄:${empty} 失敗:${failed} 新規マスタ:${aiNewMasterEntries}`));
+
+  return { done: false, processed: targets.length, tagged, empty, failed, ai_new_master_entries: aiNewMasterEntries };
+}
+
 export default {
+  // Cloudflare Workers Cron Triggers用（ダッシュボードのTriggers設定で毎日1回スケジュールすること）。
+  // 新規登録された商品（業界タグ処理済み=OFF）を検出し、上限に達するかキューが尽きるまでバッチ処理を繰り返す。
+  async scheduled(event, env, ctx) {
+    const MAX_BATCHES = 10; // 1回のCron実行あたりの上限（日次の新規登録数はごく少数の想定のため十分）
+    for (let i = 0; i < MAX_BATCHES; i++) {
+      const result = await runIndustryTagBatch(env, ctx, 50);
+      if (result.done || result.processed === 0) break;
+    }
+  },
+
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
@@ -442,6 +663,7 @@ export default {
         const costMax = body.cost_max ?? null;
         const qtyMin = body.qty_min ?? null;
         const qtyMax = body.qty_max ?? null;
+        const industryTags = Array.isArray(body.industry_tags) ? body.industry_tags.filter(Boolean) : [];
 
         // 仕入先DB（決定商品DB・裏取りDBとはフィールド構成が全く異なるため専用ロジック）
         if (dbId === SHIIRE_DB_ID) {
@@ -530,6 +752,11 @@ export default {
         if (qtyMin !== null) filters.push({ property: "数量", number: { greater_than_or_equal_to: qtyMin } });
         if (qtyMax !== null) filters.push({ property: "数量", number: { less_than_or_equal_to: qtyMax } });
 
+        // 業界タグフィルター（複数選択時はOR条件・決定商品DBのみ有効なプロパティ）
+        if (!isUratori && industryTags.length > 0) {
+          filters.push({ or: industryTags.map((tag) => ({ property: "業界タグ", multi_select: { contains: tag } })) });
+        }
+
         // フィルターをandで結合
         if (filters.length === 1) {
           queryBody.filter = filters[0];
@@ -561,6 +788,297 @@ export default {
 
 
 
+
+      // 業界タグ機能：対応表CSV（取引先名,業界タグ）を取引先業界タグ付けDBへ反映する。
+      // 既存ページと同名なら業界タグを上書き（判定方法は"対応表"に統一）、無ければ新規作成。
+      // prune:true の場合、渡された名前一覧に含まれない既存ページの業界タグを空にして無効化する
+      // （削除ツールが無いため、突合ロジック側で無視されるようにするだけ。行自体は残る）。
+      if (path === "/industry-tag/master-sync" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const rows = Array.isArray(body.rows) ? body.rows : [];
+        const prune = !!body.prune;
+        // prune比較には「今回の全対象名」（allNamesがあればそちら、無ければrowsの名前）を使う。
+        // バッチ分割してアップサートする場合、最終バッチでallNamesに全件の名前一覧を渡すこと。
+        const pruneKeepNames = new Set(Array.isArray(body.allNames) && body.allNames.length > 0
+          ? body.allNames.map((n) => String(n).trim())
+          : rows.map((r) => String(r.name || "").trim()));
+        try {
+          const existing = new Map(); // normalizeCompanyName(name) -> {pageId, name, tag}
+          let cursor = undefined;
+          do {
+            const qBody = { page_size: 100 };
+            if (cursor) qBody.start_cursor = cursor;
+            const res = await fetchNotionWithRetry(`https://api.notion.com/v1/databases/${INDUSTRY_TAG_DB_ID}/query`, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                "Notion-Version": "2022-06-28",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(qBody),
+            });
+            const data = await res.json();
+            if (data.object === "error") throw new Error("マスタDB取得に失敗: " + JSON.stringify(data));
+            for (const page of data.results || []) {
+              const name = page.properties?.["取引先名"]?.title?.[0]?.plain_text || "";
+              if (!name) continue;
+              const tags = (page.properties?.["業界タグ"]?.multi_select || []).map((t) => t.name);
+              existing.set(name, { pageId: page.id, name, tag: tags[0] || null });
+            }
+            cursor = data.has_more ? data.next_cursor : undefined;
+          } while (cursor);
+
+          let created = 0, updated = 0, unchanged = 0, pruned = 0, failed = 0;
+
+          for (const row of rows) {
+            const name = String(row.name || "").trim();
+            const tag = String(row.tag || "").trim();
+            if (!name || !tag || !INDUSTRY_TAGS.includes(tag)) { failed++; continue; }
+            const hit = existing.get(name);
+            try {
+              if (!hit) {
+                const res = await fetchNotionWithRetry("https://api.notion.com/v1/pages", {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    parent: { database_id: INDUSTRY_TAG_DB_ID },
+                    properties: {
+                      "取引先名": { title: [{ text: { content: name } }] },
+                      "業界タグ": { multi_select: [{ name: tag }] },
+                      "判定方法": { select: { name: "対応表" } },
+                    },
+                  }),
+                });
+                const created_data = await res.json();
+                if (created_data.object === "error") throw new Error(JSON.stringify(created_data));
+                created++;
+              } else if (hit.tag !== tag) {
+                const res = await fetchNotionWithRetry(`https://api.notion.com/v1/pages/${hit.pageId}`, {
+                  method: "PATCH",
+                  headers: {
+                    "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    properties: {
+                      "業界タグ": { multi_select: [{ name: tag }] },
+                      "判定方法": { select: { name: "対応表" } },
+                    },
+                  }),
+                });
+                const updated_data = await res.json();
+                if (updated_data.object === "error") throw new Error(JSON.stringify(updated_data));
+                updated++;
+              } else {
+                unchanged++;
+              }
+            } catch (e) {
+              failed++;
+              ctx.waitUntil(logToNotion(env, "エラー", "業界タグ", "マスタ同期の1件書き込みに失敗: " + name, e.message.slice(0, 500)));
+            }
+          }
+
+          if (prune) {
+            for (const [name, info] of existing) {
+              if (pruneKeepNames.has(name) || !info.tag) continue;
+              try {
+                await fetchNotionWithRetry(`https://api.notion.com/v1/pages/${info.pageId}`, {
+                  method: "PATCH",
+                  headers: {
+                    "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                    "Notion-Version": "2022-06-28",
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({ properties: { "業界タグ": { multi_select: [] } } }),
+                });
+                pruned++;
+              } catch (e) { /* ベストエフォート */ }
+            }
+          }
+
+          ctx.waitUntil(logToNotion(env, "検索", "業界タグ", "マスタ同期実行", `新規:${created} 更新:${updated} 変更なし:${unchanged} 無効化:${pruned} 失敗:${failed}`));
+
+          return new Response(JSON.stringify({ created, updated, unchanged, pruned, failed, existing_total: existing.size }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "業界タグ", "マスタ同期に失敗", e.message));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 業界タグ機能：本実装（Cron）前の精度確認用。決定商品DBの未処理取引先名をサンプル抽出し、
+      // マスタDB（取引先業界タグ付けDB）との突合→未マッチ分のみGeminiに社名だけ渡して判定。
+      // Notionへの書き込みは一切行わず、結果を返すだけ（沖さんの目視チェック用）。
+      if (path === "/industry-tag/backfill-sample" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const sampleSize = Math.min(Math.max(Number(body.sampleSize) || 30, 1), 100);
+        try {
+          const master = await fetchIndustryTagMaster(env);
+
+          // 決定商品DBから「業界タグ処理済み」がOFFの商品を取得し、ユニークな取引先名を集める。
+          // サンプル確認用のため、十分な数のユニーク社名が集まるまで数ページだけ辿る（全件は辿らない）。
+          const uniqueNames = [];
+          const seen = new Set();
+          let cursor = undefined;
+          let pagesFetched = 0;
+          const MAX_PAGES = 10; // 100件×10ページ＝最大1000商品まで確認すれば十分な社数が集まる想定
+          while (uniqueNames.length < sampleSize * 3 && pagesFetched < MAX_PAGES) {
+            const queryBody = {
+              page_size: 100,
+              filter: { property: "業界タグ処理済み", checkbox: { equals: false } },
+            };
+            if (cursor) queryBody.start_cursor = cursor;
+            const res = await fetch(`https://api.notion.com/v1/databases/${KETTEI_DB_ID}/query`, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                "Notion-Version": "2022-06-28",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(queryBody),
+            });
+            const data = await res.json();
+            if (data.object === "error") throw new Error("決定商品DBの取得に失敗: " + JSON.stringify(data));
+            pagesFetched++;
+            for (const page of data.results || []) {
+              const name = page.properties?.["取引先名"]?.rich_text?.[0]?.plain_text || "";
+              if (name && !seen.has(name)) { seen.add(name); uniqueNames.push(name); }
+            }
+            cursor = data.has_more ? data.next_cursor : undefined;
+            if (!cursor) break;
+          }
+
+          const matched = [];
+          const unmatched = [];
+          for (const name of uniqueNames) {
+            const tag = matchIndustryTag(master, name);
+            if (tag) matched.push({ name, tag, method: "対応表" });
+            else unmatched.push(name);
+          }
+
+          const aiSample = unmatched.slice(0, sampleSize);
+          let aiJudged = [];
+          if (aiSample.length > 0) {
+            const prompt = `以下は法人・団体名のリストです。それぞれについて、次の19分類のうち最も近いものを1つ選んでください。\n` +
+              `【重要】判断材料は会社名・団体名そのものだけです。商品の内容や業種の一般知識から推測してよいですが、Web検索は行わず、あなたの既存知識のみで判断してください。\n` +
+              `会社名から業界が明確に判断できない場合は、無理に推測せず tag を空文字("")にしてください（厳しめに判定すること）。\n\n` +
+              `【19分類】\n${INDUSTRY_TAGS.join("、")}\n\n` +
+              `【出力形式】他の説明文は一切含めず、以下のJSON配列のみを出力してください。\n` +
+              `[{"name":"元の会社名","tag":"分類名またはtagが不明な場合は空文字"}]\n\n` +
+              `【対象リスト】\n${aiSample.map((n) => "・" + n).join("\n")}`;
+
+            const geminiData = await callGemini(env, [{ role: "user", parts: [{ text: prompt }] }]);
+            const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            try {
+              const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+              const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+              aiJudged = parsed
+                .filter((r) => r && r.name)
+                .map((r) => ({ name: r.name, tag: INDUSTRY_TAGS.includes(r.tag) ? r.tag : null, method: "AI判定" }));
+            } catch (e) {
+              ctx.waitUntil(logToNotion(env, "エラー", "業界タグ", "Gemini判定結果のJSON解析に失敗", rawText.slice(0, 500)));
+            }
+          }
+
+          ctx.waitUntil(logToNotion(env, "検索", "業界タグ", "サンプルテスト実行", `対象:${uniqueNames.length} 対応表一致:${matched.length} AI判定:${aiJudged.length}`));
+
+          return new Response(JSON.stringify({
+            master_count: master.length,
+            checked_supplier_count: uniqueNames.length,
+            matched_by_master: matched,
+            ai_judged_sample: aiJudged,
+            unmatched_not_sampled: unmatched.slice(sampleSize),
+          }), { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "業界タグ", "サンプルテストに失敗", e.message));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 業界タグ機能：業界タグが空欄のまま処理済みになっている商品の「業界タグ処理済み」をOFFに戻す。
+      // Gemini側のレート制限等で空欄になったものを、/industry-tag/backfill-apply で再判定させるための下準備。
+      if (path === "/industry-tag/reset-empty" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const limit = Math.min(Math.max(Number(body.limit) || 50, 1), 100);
+        try {
+          const queryBody = {
+            page_size: limit,
+            filter: {
+              and: [
+                { property: "業界タグ処理済み", checkbox: { equals: true } },
+                { property: "業界タグ", multi_select: { is_empty: true } },
+              ],
+            },
+          };
+          const res = await fetchNotionWithRetry(`https://api.notion.com/v1/databases/${KETTEI_DB_ID}/query`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(queryBody),
+          });
+          const data = await res.json();
+          if (data.object === "error") throw new Error("空欄商品の取得に失敗: " + JSON.stringify(data));
+
+          let reset = 0, failed = 0;
+          for (const page of data.results || []) {
+            try {
+              const r = await fetchNotionWithRetry(`https://api.notion.com/v1/pages/${page.id}`, {
+                method: "PATCH",
+                headers: {
+                  "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                  "Notion-Version": "2022-06-28",
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ properties: { "業界タグ処理済み": { checkbox: false } } }),
+              });
+              const rData = await r.json();
+              if (rData.object === "error") throw new Error(JSON.stringify(rData));
+              reset++;
+            } catch (e) { failed++; }
+          }
+
+          return new Response(JSON.stringify({ reset, failed, remaining_checked: (data.results || []).length }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 業界タグ機能：本実装（バックフィル／Cron共通ロジック本体は runIndustryTagBatch に集約）。
+      // 1回の呼び出しでbatchSize件（既定50）だけ処理する。全件終わるまで繰り返し呼び出す想定。
+      if (path === "/industry-tag/backfill-apply" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const batchSize = Math.min(Math.max(Number(body.batchSize) || 50, 1), 100);
+        try {
+          const result = await runIndustryTagBatch(env, ctx, batchSize);
+          return new Response(JSON.stringify(result), { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "業界タグ", "バックフィル実行に失敗", e.message));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
 
       if (path === "/pptx/memo" && request.method === "POST") {
         // memoのGemini生成のみ担当（FMTはindex.html側に埋め込み）
@@ -681,6 +1199,7 @@ ${notionContext}
 ・テーマや条件に本当に合う商品だけを厳選して10件提案する
 ・こじつけや無理やりな提案は絶対にしない
 ・テーマに合わない商品は除外する（例：ビジネスマン向けにぬいぐるみは出さない）
+・条件やテーマに「○○業界向け」「○○業界の実績」など業界を指す言葉が含まれる場合、決定商品DBの各行にある「業界タグ」（取引先の業種）も判断材料にする。ただし業界タグは厳密なフィルターではなく参考情報なので、タグが無い（不明）商品でも他の条件に合えば除外しない
 ・DBから10件に満たない場合は「○件確認しましたが条件に合う商品が不足しています。追加で検索しますか？DB以外で検索しますか？」と確認する
 ・各候補は以下のフォーマットで書く：
 

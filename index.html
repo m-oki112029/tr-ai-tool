@@ -928,6 +928,11 @@ function escapeXml(str) {
     </div>
 
     <div class="form-section">
+      <label>業界タグ（複数選択可・取引先の業種から絞り込み）</label>
+      <div id="reportIndustryTags" style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;"></div>
+    </div>
+
+    <div class="form-section">
       <label>業界・テーマ・条件</label>
       <textarea id="reportTheme" placeholder="業界・顧客ターゲット・商品ジャンルなどを入力&#10;例：アニメ・ライブグッズ、食品メーカーノベルティ、スポーツ関連、30代女性向け"></textarea>
     </div>
@@ -1029,6 +1034,28 @@ const KETTEI_DB_ID = "360562954f43813f8594fbe03f95a8e8";
 const URATORI_DB_ID = "367562954f4381ccbdc2de32ac92f2b5";
 const SHIIRE_DB_ID = "3aa562954f4381f09834d037005aba3e"; // 仕入先DB（2026年7月新設）
 
+// 業界タグ20分類（Notion側の決定商品DB・取引先業界タグ付けDBのマルチセレクト選択肢と一致させること）
+const INDUSTRY_TAGS = [
+  'アニメ・キャラクターIP', '舞台・2.5次元', 'ゲーム', '音楽・アーティスト・アイドル',
+  'VTuber・配信者・オンラインサービス', 'スポーツチーム', 'テーマパーク', 'アパレル・ファッション',
+  '飲料・食品', '化粧品・薬品', '外食', '金融・カード・保険・不動産', '自動車・車関連品',
+  '製造（エネルギー・機械・素材）', '鉄道・交通機関', '教育・医療', '流通・小売', '旅行・宿泊', '官公庁・団体',
+  '趣味･スポーツ用品・一般消費材メーカー',
+];
+
+(function renderReportIndustryTagCheckboxes() {
+  var container = document.getElementById('reportIndustryTags');
+  if (!container) return;
+  container.innerHTML = INDUSTRY_TAGS.map(function(tag, i) {
+    return '<label style="display:flex;align-items:center;gap:4px;font-weight:normal;cursor:pointer;">' +
+      '<input type="checkbox" class="reportIndustryTagChk" value="' + tag + '" id="reportIndTag' + i + '" style="cursor:pointer;">' + tag + '</label>';
+  }).join('');
+})();
+
+function getSelectedReportIndustryTags() {
+  return Array.prototype.slice.call(document.querySelectorAll('.reportIndustryTagChk:checked')).map(function(el) { return el.value; });
+}
+
 // Notionのログ用DBにエラー・成果物イベントを送信する（送信失敗はUIに影響させない）
 function logEvent(type, feature, message, detail) {
   fetch(WORKER_URL + '/log', {
@@ -1094,7 +1121,7 @@ function extractKeywords(question) {
 // ▲▲▲ 修正ここまで ▲▲▲
 
 async function searchNotionDB(dbId, kw, opts) {
-  // opts = { cost_min, cost_max, qty_min, qty_max }
+  // opts = { cost_min, cost_max, qty_min, qty_max, industry_tags }
   opts = opts || {};
   try {
     var body = { database_id: dbId, keyword: kw };
@@ -1102,6 +1129,7 @@ async function searchNotionDB(dbId, kw, opts) {
     if (opts.cost_max !== undefined) body.cost_max = opts.cost_max;
     if (opts.qty_min !== undefined) body.qty_min = opts.qty_min;
     if (opts.qty_max !== undefined) body.qty_max = opts.qty_max;
+    if (opts.industry_tags && opts.industry_tags.length > 0) body.industry_tags = opts.industry_tags;
     var response = await fetch(WORKER_URL + '/notion/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1127,7 +1155,8 @@ function pageToText(page, type) {
     var margin = (p['粗利率'] && p['粗利率'].number) ? Math.round(p['粗利率'].number * 100) + '%' : '';
     var date = (p['納期'] && p['納期'].date) ? p['納期'].date.start : '';
     var image = (p['画像①URL'] && p['画像①URL'].url) ? p['画像①URL'].url : '';
-    return '[受注実績] 商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 仕入単価:' + ketteiCost + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 納期:' + date + ' 画像:' + image;
+    var indTags = (p['業界タグ'] && p['業界タグ'].multi_select) ? p['業界タグ'].multi_select.map(function(t) { return t.name; }).join('／') : '';
+    return '[受注実績] 商材名:' + name + ' カテゴリ:' + cat + ' 売単価:' + price + '円 仕入単価:' + ketteiCost + '円 数量:' + qty + ' 粗利率:' + margin + ' 仕入先:' + sup + ' 業界タグ:' + (indTags || '不明') + ' 納期:' + date + ' 画像:' + image;
   } else {
     var name2 = (p['商品名'] && p['商品名'].title && p['商品名'].title[0]) ? p['商品名'].title[0].text.content : '';
     var sup2 = (p['仕入先'] && p['仕入先'].rich_text && p['仕入先'].rich_text[0]) ? p['仕入先'].rich_text[0].text.content : '';
@@ -1520,6 +1549,7 @@ function resetReport() {
   document.getElementById('reportQtyMax').value = '';
   document.getElementById('reportTheme').value = '';
   document.getElementById('reportIncludeNG').checked = false;
+  document.querySelectorAll('.reportIndustryTagChk').forEach(function(el) { el.checked = false; });
   var results = document.getElementById('reportResults');
   results.classList.remove('active');
   results.innerHTML = '';
@@ -1532,8 +1562,9 @@ async function sendReport() {
   var qtyMax = document.getElementById('reportQtyMax').value;
   var theme = document.getElementById('reportTheme').value.trim();
   var includeNG = document.getElementById('reportIncludeNG').checked;
+  var industryTags = getSelectedReportIndustryTags();
 
-  if (!priceMin && !priceMax && !qtyMin && !qtyMax && !theme) {
+  if (!priceMin && !priceMax && !qtyMin && !qtyMax && !theme && industryTags.length === 0) {
     alert('条件を1つ以上入力してください。');
     return;
   }
@@ -1552,6 +1583,7 @@ async function sendReport() {
   if (qtyMin && qtyMax) conditions.push('数量' + qtyMin + '個〜' + qtyMax + '個');
   else if (qtyMin) conditions.push('数量' + qtyMin + '個以上');
   else if (qtyMax) conditions.push('数量' + qtyMax + '個以下');
+  if (industryTags.length > 0) conditions.push('業界タグ：' + industryTags.join('／'));
   if (theme) conditions.push('テーマ・条件：' + theme);
   var conditionText = conditions.join('、');
 
@@ -1562,6 +1594,7 @@ async function sendReport() {
     if (priceMax) numOpts.cost_max = parseFloat(priceMax);
     if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
     if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
+    if (industryTags.length > 0) numOpts.industry_tags = industryTags;
 
     // テーマからキーワード抽出（商品ジャンル絞り込み用）
     var keywords = theme ? extractKeywords(theme) : [];
