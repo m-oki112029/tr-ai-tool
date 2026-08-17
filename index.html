@@ -1642,8 +1642,15 @@ async function sendReport() {
     if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
     if (industryTags.length > 0) numOpts.industry_tags = industryTags;
 
-    // テーマからキーワード抽出（商品ジャンル絞り込み用）
-    var keywords = theme ? extractKeywords(theme) : [];
+    // テーマの自由文を「検索ワード変換辞書」で属性タグに変換（辞書引きのみ・AIのその場判断はしない）。
+    // 変換できた場合はハードフィルターとして使う
+    var reportAttrTags = theme ? await interpretThemeToAttributeTags(theme) : [];
+    if (reportAttrTags.length > 0) numOpts.attribute_tags = reportAttrTags;
+
+    // テーマからキーワード抽出（商品ジャンル絞り込み用）。
+    // 属性タグへの変換に成功した場合は、フリーワードの文字列一致とAND条件になって
+    // 0件になりやすいため、キーワード検索は行わずタグの絞り込みのみに任せる
+    var keywords = (theme && reportAttrTags.length === 0) ? extractKeywords(theme) : [];
     var primaryKeyword = keywords[0] || '';
 
     // 決定商品DBを数値条件＋キーワードで検索
