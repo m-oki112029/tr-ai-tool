@@ -595,6 +595,27 @@ function formatPageNumber(n) {
 
 // fillPageFn(templateSlideXml, pageItems, pageMemos, templateRelsXml, zip) は
 // { sc, relsXml } を返す（画像埋め込みなどでrelsに新しい関係を追加できるようにするため）
+// FMTテンプレートのスライドXMLには、東アジア/複合文字用フォントのcharset値が負数（例：charset="-122"）で
+// 埋め込まれている箇所がある（テンプレート作成時のツールの不具合と思われる）。OOXML仕様上charsetは0〜255の
+// 符号なしバイト値のはずで、負数は不正な値。PowerPointがこれを解釈する際に該当ランのフォントを正しく
+// 選べず、英数字部分が別フォント（記号フォント等）に置き換わって文字化けして見える原因になっていた。
+// charset属性自体を省略してもOOXML的には問題ない（PowerPointが自動でフォントを解決する）ため、
+// 生成のたびにテンプレート由来の全スライド／ノートXMLから不正なcharset属性を取り除く。
+async function sanitizeInvalidCharsetAttrs(zip) {
+  var targets = Object.keys(zip.files).filter(function(path) {
+    return !zip.files[path].dir && /^ppt\/(slides|notesSlides|slideLayouts|slideMasters)\/[^/]+\.xml$/.test(path);
+  });
+  for (var i = 0; i < targets.length; i++) {
+    var path = targets[i];
+    var xml = await zip.file(path).async('string');
+    var fixed = xml.replace(/charset="-\d+"/g, '');
+    // 「Noto Sans JP」は環境によって半角英数字のグリフが正しく描画されない（文字化けする）ことが
+    // 確認されたため、Windows/Office標準で確実に使える「Yu Gothic」に差し替える
+    fixed = fixed.replace(/typeface="Noto Sans JP"/g, 'typeface="Yu Gothic"');
+    if (fixed !== xml) zip.file(path, fixed);
+  }
+}
+
 async function generateContentPages(zip, baseSlideNum, itemsPerPage, items, memoTexts, fillPageFn) {
   var baseSlideFile = 'slide' + baseSlideNum + '.xml';
   var baseNotesFile = 'notesSlide' + baseSlideNum + '.xml';
@@ -654,6 +675,7 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
   var bytes = new Uint8Array(binary.length);
   for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   var zip = await JSZip.loadAsync(bytes);
+  await sanitizeInvalidCharsetAttrs(zip);
 
   // 商品画像URLを持つアイテムがあれば、まとめて画像を取得しておく（決定商品DB由来のみ）
   await prefetchProductImages(items);
@@ -1056,6 +1078,22 @@ function getSelectedReportIndustryTags() {
   return Array.prototype.slice.call(document.querySelectorAll('.reportIndustryTagChk:checked')).map(function(el) { return el.value; });
 }
 
+// フリーワード（テーマ・条件欄の自由文）を「検索ワード変換辞書」で属性タグに変換する。
+// AIがその場でこじつけ判断しないよう、辞書引きのみのWorkerエンドポイントを呼ぶ。
+async function interpretThemeToAttributeTags(theme) {
+  try {
+    var res = await fetch(WORKER_URL + '/attribute-tag/interpret-theme', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme: theme })
+    });
+    var data = await res.json();
+    return data.tags || [];
+  } catch (e) {
+    return [];
+  }
+}
+
 // Notionのログ用DBにエラー・成果物イベントを送信する（送信失敗はUIに影響させない）
 function logEvent(type, feature, message, detail) {
   fetch(WORKER_URL + '/log', {
@@ -1130,6 +1168,7 @@ async function searchNotionDB(dbId, kw, opts) {
     if (opts.qty_min !== undefined) body.qty_min = opts.qty_min;
     if (opts.qty_max !== undefined) body.qty_max = opts.qty_max;
     if (opts.industry_tags && opts.industry_tags.length > 0) body.industry_tags = opts.industry_tags;
+    if (opts.attribute_tags && opts.attribute_tags.length > 0) body.attribute_tags = opts.attribute_tags;
     var response = await fetch(WORKER_URL + '/notion/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1482,6 +1521,13 @@ async function sendSuggest(mode) {
     if (costMax) numOpts.cost_max = parseFloat(costMax);
     if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
     if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
+
+    // テーマの自由文を「検索ワード変換辞書」で属性タグに変換（AIのその場判断ではなく辞書引きのみ）。
+    // 変換できた場合のみハードフィルターとして使う（変換できなければ従来通りキーワードのみで検索）
+    if (theme) {
+      var attrTags = await interpretThemeToAttributeTags(theme);
+      if (attrTags.length > 0) numOpts.attribute_tags = attrTags;
+    }
 
     var rawResults, forcedSrc;
     if (mode === 'search') {

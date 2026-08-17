@@ -10,6 +10,17 @@ const SHIIRE_DB_ID = "3aa562954f4381f09834d037005aba3e"; // 仕入先DB（2026�
 const LOG_DB_ID = "58f7f7959c814310ae9a27d5b7fcc299"; // 🪵 AIツール_ログ
 const HANSOKU_HOST = "www.hansoku-style.jp"; // 販促スタイル（自社ECサイト）。/hansoku/detailで受け取るURLはこのホストのみ許可する
 const INDUSTRY_TAG_DB_ID = "a40b458220624bb3913ad77dbdfd0272"; // 取引先業界タグ付けDB（2026年8月新設）
+const ATTR_KEYWORD_DICT_DB_ID = "fd4b20bcf025449b8f9e0585211ba347"; // 属性タグ判定キーワード辞書（2026年8月14日新設）
+const SEARCH_WORD_DICT_DB_ID = "46e8fde65e8b4abdb8cc1d26cfe54415"; // 検索ワード変換辞書（2026年8月14日新設）
+
+// 属性タグ16分類（決定商品DB・裏取りDB・両辞書DBのマルチセレクト選択肢と一致させること）
+const ATTRIBUTE_TAGS = [
+  "涼感・冷感", "ヘア関連", "身だしなみ", "リラックス", "キッチン・食卓", "文房具・ステーショナリー",
+  "アパレル", "バッグ・ポーチ", "アウトドア・レジャー", "モバイル・PC", "ビジネス",
+  "防寒・あったかグッズ", "雨具", "シール・ステッカー", "消耗品",
+  "タオル・ハンカチ", "キーホルダー・チャーム・缶バッジ", "カード", "ペンライト", "うちわ",
+  "アクリル", "ぬい・クッション", "ボイス", "マグネット",
+];
 
 // Notion APIは短時間に連続で叩くと429（レート制限）が返ることがあるため、
 // 大量の逐次書き込みを行う処理（マスタ同期等）ではこのリトライ付きfetchを使う。
@@ -97,6 +108,54 @@ async function fetchIndustryTagMaster(env) {
     cursor = data.has_more ? data.next_cursor : undefined;
   } while (cursor);
   return master;
+}
+
+// 汎用のNotion DBページネーション取得ヘルパー（辞書DB取得で使い回す）
+async function fetchAllPages(env, dbId) {
+  const pages = [];
+  let cursor = undefined;
+  do {
+    const body = { page_size: 100 };
+    if (cursor) body.start_cursor = cursor;
+    const res = await fetchNotionWithRetry(`https://api.notion.com/v1/databases/${dbId}/query`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.object === "error") throw new Error("DB取得に失敗（" + dbId + "）: " + JSON.stringify(data));
+    pages.push(...(data.results || []));
+    cursor = data.has_more ? data.next_cursor : undefined;
+  } while (cursor);
+  return pages;
+}
+
+// 属性タグ判定キーワード辞書・検索ワード変換辞書はどちらも「キーワード（title）」「対応属性タグ（multi_select）」の同一構造
+async function fetchKeywordDict(env, dbId) {
+  const pages = await fetchAllPages(env, dbId);
+  return pages
+    .map((page) => ({
+      keyword: page.properties?.["キーワード"]?.title?.[0]?.plain_text || "",
+      tags: (page.properties?.["対応属性タグ"]?.multi_select || []).map((t) => t.name),
+    }))
+    .filter((r) => r.keyword && r.tags.length > 0);
+}
+
+// 商品名（決定商品DBの商材名・裏取りDBの商品名）に辞書のキーワードが部分一致するか調べ、
+// マッチした全キーワードの属性タグを重複排除した配列で返す（属性タグは複数付与OK）。
+function matchAttributeTags(dict, productName) {
+  const name = String(productName || "");
+  const tags = new Set();
+  for (const entry of dict) {
+    if (name.includes(entry.keyword)) {
+      for (const t of entry.tags) tags.add(t);
+    }
+  }
+  return [...tags];
 }
 
 // 販促スタイルの検索結果ページ（HTML）から商品カードを抜き出す
@@ -434,13 +493,120 @@ async function runIndustryTagBatch(env, ctx, batchSize) {
   return { done: false, processed: targets.length, tagged, empty, failed, ai_new_master_entries: aiNewMasterEntries };
 }
 
+// 属性タグ機能：本実装（バックフィル／Cronで共通利用するロジック本体）。
+// dbId・titlePropを渡すことで決定商品DB（商材名）・裏取りDB（商品名）どちらにも使える。
+// 1. 属性タグ判定キーワード辞書と商品名を部分一致で照合→マッチした分だけ確定（AI不要・複数タグ可）
+// 2. マッチしなかった商品のみ、Geminiに商品名だけ渡してバッチ判定（厳しめ基準・分からなければ空欄）
+// 3. 属性タグ・属性タグ処理済みを書き込む
+async function runAttributeTagBatch(env, ctx, dbId, titleProp, batchSize) {
+  const dict = await fetchKeywordDict(env, ATTR_KEYWORD_DICT_DB_ID);
+
+  const queryBody = {
+    page_size: batchSize,
+    filter: { property: "属性タグ処理済み", checkbox: { equals: false } },
+  };
+  const listRes = await fetchNotionWithRetry(`https://api.notion.com/v1/databases/${dbId}/query`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+      "Notion-Version": "2022-06-28",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(queryBody),
+  });
+  const listData = await listRes.json();
+  if (listData.object === "error") throw new Error("DB取得に失敗（" + dbId + "）: " + JSON.stringify(listData));
+
+  const targets = (listData.results || []).map((page) => ({
+    pageId: page.id,
+    name: page.properties?.[titleProp]?.title?.[0]?.plain_text || "",
+  }));
+
+  if (targets.length === 0) {
+    return { done: true, processed: 0, rule_based: 0, ai_judged: 0, empty: 0, failed: 0 };
+  }
+
+  // このバッチ内のユニーク商品名だけ解決する
+  const nameToTags = new Map(); // name -> string[]（空配列は「判定したが該当なし」）
+  const uniqueNames = [...new Set(targets.map((t) => t.name).filter(Boolean))];
+  const unresolvedNames = [];
+  for (const name of uniqueNames) {
+    const tags = matchAttributeTags(dict, name);
+    if (tags.length > 0) nameToTags.set(name, tags);
+    else unresolvedNames.push(name);
+  }
+  const ruleBasedCount = uniqueNames.length - unresolvedNames.length;
+
+  if (unresolvedNames.length > 0) {
+    const prompt = `以下は商品名のリストです。それぞれについて、次の16分類のうち該当するものを選んでください（複数該当してもよい・0個でもよい）。\n` +
+      `【重要】判断材料は商品名そのものだけです。あなたの既存知識のみで判断し、Web検索は行わないでください。\n` +
+      `商品名から機能・用途が明確に判断できない場合は、無理に推測せずtagsを空配列にしてください（厳しめに判定すること）。\n\n` +
+      `【16分類】\n${ATTRIBUTE_TAGS.join("、")}\n\n` +
+      `【出力形式】他の説明文は一切含めず、以下のJSON配列のみを出力してください。\n` +
+      `[{"name":"元の商品名","tags":["分類名", ...]}]\n\n` +
+      `【対象リスト】\n${unresolvedNames.map((n) => "・" + n).join("\n")}`;
+
+    const geminiData = await callGemini(env, [{ role: "user", parts: [{ text: prompt }] }]);
+    const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    let aiResults = [];
+    try {
+      const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+      aiResults = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+    } catch (e) {
+      ctx.waitUntil(logToNotion(env, "エラー", "属性タグ", "Gemini判定結果のJSON解析に失敗", rawText.slice(0, 500)));
+    }
+    const aiTagsByName = new Map(
+      aiResults.filter((r) => r && r.name).map((r) => [r.name, (Array.isArray(r.tags) ? r.tags : []).filter((t) => ATTRIBUTE_TAGS.includes(t))])
+    );
+    for (const name of unresolvedNames) {
+      nameToTags.set(name, aiTagsByName.get(name) || []);
+    }
+  }
+
+  let tagged = 0, empty = 0, failed = 0;
+  for (const target of targets) {
+    const tags = target.name ? (nameToTags.get(target.name) || []) : [];
+    try {
+      const properties = { "属性タグ処理済み": { checkbox: true } };
+      if (tags.length > 0) properties["属性タグ"] = { multi_select: tags.map((t) => ({ name: t })) };
+      const res = await fetchNotionWithRetry(`https://api.notion.com/v1/pages/${target.pageId}`, {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+          "Notion-Version": "2022-06-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ properties }),
+      });
+      const data = await res.json();
+      if (data.object === "error") throw new Error(JSON.stringify(data));
+      if (tags.length > 0) tagged++; else empty++;
+    } catch (e) {
+      failed++;
+      ctx.waitUntil(logToNotion(env, "エラー", "属性タグ", "商品への書き込みに失敗: " + target.name, e.message.slice(0, 500)));
+    }
+  }
+
+  ctx.waitUntil(logToNotion(env, "検索", "属性タグ", "バックフィル実行（" + dbId + "）", `処理:${targets.length} ルールベース確定:${ruleBasedCount} タグ付:${tagged} 空欄:${empty} 失敗:${failed}`));
+
+  return { done: false, processed: targets.length, rule_based: ruleBasedCount, tagged, empty, failed };
+}
+
 export default {
   // Cloudflare Workers Cron Triggers用（ダッシュボードのTriggers設定で毎日1回スケジュールすること）。
-  // 新規登録された商品（業界タグ処理済み=OFF）を検出し、上限に達するかキューが尽きるまでバッチ処理を繰り返す。
+  // 新規登録された商品（業界タグ／属性タグ処理済み=OFF）を検出し、上限に達するかキューが尽きるまでバッチ処理を繰り返す。
   async scheduled(event, env, ctx) {
     const MAX_BATCHES = 10; // 1回のCron実行あたりの上限（日次の新規登録数はごく少数の想定のため十分）
     for (let i = 0; i < MAX_BATCHES; i++) {
       const result = await runIndustryTagBatch(env, ctx, 50);
+      if (result.done || result.processed === 0) break;
+    }
+    for (let i = 0; i < MAX_BATCHES; i++) {
+      const result = await runAttributeTagBatch(env, ctx, KETTEI_DB_ID, "商材名", 50);
+      if (result.done || result.processed === 0) break;
+    }
+    for (let i = 0; i < MAX_BATCHES; i++) {
+      const result = await runAttributeTagBatch(env, ctx, URATORI_DB_ID, "商品名", 50);
       if (result.done || result.processed === 0) break;
     }
   },
@@ -664,6 +830,7 @@ export default {
         const qtyMin = body.qty_min ?? null;
         const qtyMax = body.qty_max ?? null;
         const industryTags = Array.isArray(body.industry_tags) ? body.industry_tags.filter(Boolean) : [];
+        const attributeTags = Array.isArray(body.attribute_tags) ? body.attribute_tags.filter(Boolean) : [];
 
         // 仕入先DB（決定商品DB・裏取りDBとはフィールド構成が全く異なるため専用ロジック）
         if (dbId === SHIIRE_DB_ID) {
@@ -755,6 +922,11 @@ export default {
         // 業界タグフィルター（複数選択時はOR条件・決定商品DBのみ有効なプロパティ）
         if (!isUratori && industryTags.length > 0) {
           filters.push({ or: industryTags.map((tag) => ({ property: "業界タグ", multi_select: { contains: tag } })) });
+        }
+
+        // 属性タグフィルター（複数選択時はOR条件・決定商品DB・裏取りDB両方で有効）
+        if (attributeTags.length > 0) {
+          filters.push({ or: attributeTags.map((tag) => ({ property: "属性タグ", multi_select: { contains: tag } })) });
         }
 
         // フィルターをandで結合
@@ -1073,6 +1245,189 @@ export default {
           return new Response(JSON.stringify(result), { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
         } catch (e) {
           ctx.waitUntil(logToNotion(env, "エラー", "業界タグ", "バックフィル実行に失敗", e.message));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 属性タグ機能：本実装（バックフィル／Cron共通ロジック本体は runAttributeTagBatch に集約）。
+      // body.target で "kettei"（決定商品DB・商材名）または "uratori"（裏取りDB・商品名）を指定する。
+      if (path === "/attribute-tag/backfill-apply" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const batchSize = Math.min(Math.max(Number(body.batchSize) || 50, 1), 100);
+        const target = body.target === "uratori" ? "uratori" : "kettei";
+        const dbId = target === "uratori" ? URATORI_DB_ID : KETTEI_DB_ID;
+        const titleProp = target === "uratori" ? "商品名" : "商材名";
+        try {
+          const result = await runAttributeTagBatch(env, ctx, dbId, titleProp, batchSize);
+          return new Response(JSON.stringify(result), { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "属性タグ", "バックフィル実行に失敗", e.message));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 属性タグ機能：本実装（Cron）前の精度確認用。決定商品DB／裏取りDBの未処理商品をサンプル抽出し、
+      // キーワード辞書との一致→未マッチ分のみGeminiに商品名だけ渡して判定。Notionへの書き込みは行わない。
+      if (path === "/attribute-tag/backfill-sample" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const sampleSize = Math.min(Math.max(Number(body.sampleSize) || 30, 1), 100);
+        const target = body.target === "uratori" ? "uratori" : "kettei";
+        const dbId = target === "uratori" ? URATORI_DB_ID : KETTEI_DB_ID;
+        const titleProp = target === "uratori" ? "商品名" : "商材名";
+        try {
+          const dict = await fetchKeywordDict(env, ATTR_KEYWORD_DICT_DB_ID);
+
+          const uniqueNames = [];
+          const seen = new Set();
+          let cursor = undefined;
+          let pagesFetched = 0;
+          const MAX_PAGES = 10;
+          while (uniqueNames.length < sampleSize * 3 && pagesFetched < MAX_PAGES) {
+            const queryBody = {
+              page_size: 100,
+              filter: { property: "属性タグ処理済み", checkbox: { equals: false } },
+            };
+            if (cursor) queryBody.start_cursor = cursor;
+            const res = await fetchNotionWithRetry(`https://api.notion.com/v1/databases/${dbId}/query`, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                "Notion-Version": "2022-06-28",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(queryBody),
+            });
+            const data = await res.json();
+            if (data.object === "error") throw new Error("DB取得に失敗: " + JSON.stringify(data));
+            pagesFetched++;
+            for (const page of data.results || []) {
+              const name = page.properties?.[titleProp]?.title?.[0]?.plain_text || "";
+              if (name && !seen.has(name)) { seen.add(name); uniqueNames.push(name); }
+            }
+            cursor = data.has_more ? data.next_cursor : undefined;
+            if (!cursor) break;
+          }
+
+          const matched = [];
+          const unmatched = [];
+          for (const name of uniqueNames) {
+            const tags = matchAttributeTags(dict, name);
+            if (tags.length > 0) matched.push({ name, tags, method: "ルールベース" });
+            else unmatched.push(name);
+          }
+
+          const aiSample = unmatched.slice(0, sampleSize);
+          let aiJudged = [];
+          if (aiSample.length > 0) {
+            const prompt = `以下は商品名のリストです。それぞれについて、次の16分類のうち該当するものを選んでください（複数該当してもよい・0個でもよい）。\n` +
+              `【重要】判断材料は商品名そのものだけです。あなたの既存知識のみで判断し、Web検索は行わないでください。\n` +
+              `商品名から機能・用途が明確に判断できない場合は、無理に推測せずtagsを空配列にしてください（厳しめに判定すること）。\n\n` +
+              `【16分類】\n${ATTRIBUTE_TAGS.join("、")}\n\n` +
+              `【出力形式】他の説明文は一切含めず、以下のJSON配列のみを出力してください。\n` +
+              `[{"name":"元の商品名","tags":["分類名", ...]}]\n\n` +
+              `【対象リスト】\n${aiSample.map((n) => "・" + n).join("\n")}`;
+
+            const geminiData = await callGemini(env, [{ role: "user", parts: [{ text: prompt }] }]);
+            const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            try {
+              const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+              const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+              aiJudged = parsed
+                .filter((r) => r && r.name)
+                .map((r) => ({ name: r.name, tags: (Array.isArray(r.tags) ? r.tags : []).filter((t) => ATTRIBUTE_TAGS.includes(t)), method: "AI判定" }));
+            } catch (e) {
+              ctx.waitUntil(logToNotion(env, "エラー", "属性タグ", "Gemini判定結果のJSON解析に失敗", rawText.slice(0, 500)));
+            }
+          }
+
+          ctx.waitUntil(logToNotion(env, "検索", "属性タグ", "サンプルテスト実行（" + target + "）", `対象:${uniqueNames.length} ルールベース一致:${matched.length} AI判定:${aiJudged.length}`));
+
+          return new Response(JSON.stringify({
+            dict_count: dict.length,
+            checked_count: uniqueNames.length,
+            matched_by_rule: matched,
+            ai_judged_sample: aiJudged,
+            unmatched_not_sampled: unmatched.slice(sampleSize),
+          }), { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+        } catch (e) {
+          ctx.waitUntil(logToNotion(env, "エラー", "属性タグ", "サンプルテストに失敗", e.message));
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 属性タグ機能：フリーワードを「検索ワード変換辞書」で属性タグに変換する（AIを使わず辞書引きのみ・決定論的）。
+      // ①アイテム提案・③一問一答などで、検索前にこの結果を使ってNotion側のattribute_tagsフィルターに渡す想定。
+      if (path === "/attribute-tag/interpret-theme" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const theme = String(body.theme || "");
+        try {
+          const dict = await fetchKeywordDict(env, SEARCH_WORD_DICT_DB_ID);
+          const tags = matchAttributeTags(dict, theme);
+          return new Response(JSON.stringify({ tags }), { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+        } catch (e) {
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 属性タグ機能：辞書を大幅改修した際などに、全件を再判定させるための一括リセット。
+      // 「属性タグ処理済み」=ONの商品を対象に、属性タグ・属性タグ処理済みの両方をクリアする。
+      // 1回の呼び出しでlimit件（既定100）だけ処理する。全件終わるまで繰り返し呼び出す想定。
+      if (path === "/attribute-tag/reset-all" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const limit = Math.min(Math.max(Number(body.limit) || 100, 1), 100);
+        const target = body.target === "uratori" ? "uratori" : "kettei";
+        const dbId = target === "uratori" ? URATORI_DB_ID : KETTEI_DB_ID;
+        try {
+          const queryBody = {
+            page_size: limit,
+            filter: { property: "属性タグ処理済み", checkbox: { equals: true } },
+          };
+          const res = await fetchNotionWithRetry(`https://api.notion.com/v1/databases/${dbId}/query`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(queryBody),
+          });
+          const data = await res.json();
+          if (data.object === "error") throw new Error("対象商品の取得に失敗: " + JSON.stringify(data));
+
+          let reset = 0, failed = 0;
+          for (const page of data.results || []) {
+            try {
+              const r = await fetchNotionWithRetry(`https://api.notion.com/v1/pages/${page.id}`, {
+                method: "PATCH",
+                headers: {
+                  "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                  "Notion-Version": "2022-06-28",
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ properties: { "属性タグ処理済み": { checkbox: false }, "属性タグ": { multi_select: [] } } }),
+              });
+              const rData = await r.json();
+              if (rData.object === "error") throw new Error(JSON.stringify(rData));
+              reset++;
+            } catch (e) { failed++; }
+          }
+
+          return new Response(JSON.stringify({ reset, failed, remaining_checked: (data.results || []).length }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
           return new Response(JSON.stringify({ error: e.message }), {
             status: 500,
             headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
