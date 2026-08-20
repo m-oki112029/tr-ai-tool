@@ -1409,12 +1409,14 @@ var supplierAllResults = [];   // Notionから取得した全件データ（最�
 var supplierShownCount = 0;    // 現在Geminiに渡した件数
 var SUPPLIER_PAGE_SIZE = 25;   // 1回に渡す件数（重複排除後の件数なので増量）
 var supplierShiireContext = ''; // 仕入先DBの検索結果（テキスト化済み）。初回検索時に取得し、以降の全ターンで使い回す
+var supplierSearchDone = false; // 初回検索が実行済みか（裏取りDBが0件でも仕入先DBだけヒットするケースがあるため、件数ではなく実行済みフラグで判定する）
 
 function resetSupplier() {
   supplierHistory = [];
   supplierAllResults = [];
   supplierShownCount = 0;
   supplierShiireContext = '';
+  supplierSearchDone = false;
   var messages = document.getElementById('supplierMessages');
   messages.innerHTML = '<div class="message ai"><div class="bubble">仕入先を調べたい商品名・仕様を入力してください。裏取りDBから仕入先候補と仕様・コスト情報を出します。\n\n例：「アクリルスタンド」「フェイスタオル 刺繍あり」「エコバッグ 不織布」</div></div>';
   document.getElementById('supplierInput').value = '';
@@ -1443,7 +1445,7 @@ async function sendSupplier() {
     var notionContext = '';
 
     // 「もっとちょうだい」の場合：次の15件を追加
-    if (isMoreRequest(question) && supplierAllResults.length > 0) {
+    if (isMoreRequest(question) && supplierSearchDone) {
       messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">🔍 追加データを取得中...</div></div>';
       var nextItems = supplierAllResults.slice(supplierShownCount, supplierShownCount + SUPPLIER_PAGE_SIZE);
       if (nextItems.length === 0) {
@@ -1459,7 +1461,7 @@ async function sendSupplier() {
       notionContext = [notionContext, supplierShiireContext].filter(Boolean).join('\n');
 
     // 初回 or 通常の追加質問：保持データをそのまま使う
-    } else if (supplierAllResults.length > 0) {
+    } else if (supplierSearchDone) {
       messages.innerHTML += '<div class="message ai" id="' + loadingId + '"><div class="bubble">💬 回答を生成中...</div></div>';
       // 保持済みデータの先頭15件をそのまま使う（再検索しない）
       notionContext = supplierAllResults.slice(0, supplierShownCount).map(function(r) { return pageToText(r, 'uratori'); }).join('\n');
@@ -1485,6 +1487,7 @@ async function sendSupplier() {
       // 仕入先DBも補足情報として検索（取扱商材が合致する仕入先の候補出し用）。以降の全ターンで使い回すため保持しておく
       var shiireResults = await searchNotionDB(SHIIRE_DB_ID, primaryKeyword);
       supplierShiireContext = shiireResults.slice(0, 8).map(pageToTextShiire).filter(Boolean).join('\n');
+      supplierSearchDone = true;
 
       notionContext = [uratoriContext, supplierShiireContext].filter(Boolean).join('\n');
       if (!notionContext) notionContext = 'データが見つかりませんでした';
