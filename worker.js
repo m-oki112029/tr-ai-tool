@@ -20,6 +20,7 @@ const ATTRIBUTE_TAGS = [
   "防寒・あったかグッズ", "雨具", "シール・ステッカー", "消耗品",
   "タオル・ハンカチ", "キーホルダー・チャーム・缶バッジ", "カード", "ペンライト", "うちわ",
   "アクリル", "ぬい・クッション", "ボイス", "マグネット",
+  "インテリア", "おもちゃ", "食品", "アクセサリー",
 ];
 
 // Notion APIは短時間に連続で叩くと429（レート制限）が返ることがあるため、
@@ -1417,6 +1418,66 @@ export default {
                   "Content-Type": "application/json",
                 },
                 body: JSON.stringify({ properties: { "属性タグ処理済み": { checkbox: false }, "属性タグ": { multi_select: [] } } }),
+              });
+              const rData = await r.json();
+              if (rData.object === "error") throw new Error(JSON.stringify(rData));
+              reset++;
+            } catch (e) { failed++; }
+          }
+
+          return new Response(JSON.stringify({ reset, failed, remaining_checked: (data.results || []).length }), {
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(JSON.stringify({ error: e.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      // 属性タグ機能：辞書にキーワード・タグを追加しただけの通常の更新用リセット。
+      // 「属性タグ処理済み」=ON かつ「属性タグ」が空欄の商品だけを対象に処理済みフラグを戻す
+      // （既にタグが付いている商品は対象外＝reset-allと違い全件を洗い直さない、軽量版）。
+      // 1回の呼び出しでlimit件（既定100）だけ処理する。対象が尽きるまで繰り返し呼び出す想定。
+      if (path === "/attribute-tag/reset-empty" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const limit = Math.min(Math.max(Number(body.limit) || 100, 1), 100);
+        const target = body.target === "uratori" ? "uratori" : "kettei";
+        const dbId = target === "uratori" ? URATORI_DB_ID : KETTEI_DB_ID;
+        try {
+          const queryBody = {
+            page_size: limit,
+            filter: {
+              and: [
+                { property: "属性タグ処理済み", checkbox: { equals: true } },
+                { property: "属性タグ", multi_select: { is_empty: true } },
+              ],
+            },
+          };
+          const res = await fetchNotionWithRetry(`https://api.notion.com/v1/databases/${dbId}/query`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(queryBody),
+          });
+          const data = await res.json();
+          if (data.object === "error") throw new Error("対象商品の取得に失敗: " + JSON.stringify(data));
+
+          let reset = 0, failed = 0;
+          for (const page of data.results || []) {
+            try {
+              const r = await fetchNotionWithRetry(`https://api.notion.com/v1/pages/${page.id}`, {
+                method: "PATCH",
+                headers: {
+                  "Authorization": `Bearer ${env.NOTION_TOKEN}`,
+                  "Notion-Version": "2022-06-28",
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ properties: { "属性タグ処理済み": { checkbox: false } } }),
               });
               const rData = await r.json();
               if (rData.object === "error") throw new Error(JSON.stringify(rData));
