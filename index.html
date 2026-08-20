@@ -180,7 +180,7 @@ function openPptxModal(fmtType) {
   document.getElementById('card2').classList.remove('selected');
 
   // 選択アイテム確認
-  var tab = fmtType === 'jisseki' ? 'report' : (fmtType === 'hansoku' ? 'hansoku' : 'suggest');
+  var tab = fmtType === 'jisseki' ? 'report' : (fmtType === 'hansoku' ? 'hansoku' : (fmtType === 'uratori' ? 'uratori' : 'suggest'));
   var selectedItems = getSelectedItems(tab);
   if (selectedItems.length === 0) {
     alert('商品が選択されていません。チェックボックスで資料に含める商品を選んでください。');
@@ -192,7 +192,7 @@ function openPptxModal(fmtType) {
   document.getElementById('pptxDate').value = today.getFullYear() + '年' + (today.getMonth()+1) + '月' + today.getDate() + '日';
 
   // タイトル入力欄のラベルを表紙の実際の文言に合わせる
-  document.getElementById('pptxTitleLabel').textContent = fmtType === 'jisseki'
+  document.getElementById('pptxTitleLabel').textContent = (fmtType === 'jisseki' || fmtType === 'uratori')
     ? 'タイトル（「○○実績ご紹介資料」の○○部分）'
     : 'タイトル（「○○○ご提案資料」の○○○部分）';
 
@@ -255,7 +255,7 @@ async function generatePptx() {
   }
 
   // 選択されたアイテムを取得
-  var tab = currentFmtType === 'jisseki' ? 'report' : (currentFmtType === 'hansoku' ? 'hansoku' : 'suggest');
+  var tab = currentFmtType === 'jisseki' ? 'report' : (currentFmtType === 'hansoku' ? 'hansoku' : (currentFmtType === 'uratori' ? 'uratori' : 'suggest'));
   var items = getSelectedItems(tab);
   if (items.length === 0) { alert('商品が選択されていません。'); return; }
 
@@ -279,14 +279,14 @@ async function generatePptx() {
     }
     
     // FMTはindex.html内のBase64を使用（販促スタイルは専用FMT未整備のためアイテム提案用FMTを仮流用）
-    var fmtB64 = currentFmtType === 'jisseki' ? FMT_JISSEKI_B64 : FMT_ITEM_B64;
+    var fmtB64 = (currentFmtType === 'jisseki' || currentFmtType === 'uratori') ? FMT_JISSEKI_B64 : FMT_ITEM_B64;
 
     // JSZipでパワポを書き換えてダウンロード
     await modifyAndDownloadPptx(fmtB64, memoTexts, {
       title, date, staffName, staffPhone, staffEmail, items
     });
 
-    var fmtLabelForLog = currentFmtType === 'jisseki' ? '実績ご紹介資料' : (currentFmtType === 'hansoku' ? '販促スタイル提案資料（仮FMT）' : 'アイテムご提案資料');
+    var fmtLabelForLog = currentFmtType === 'jisseki' ? '実績ご紹介資料' : (currentFmtType === 'uratori' ? '裏取りDB実績ご紹介資料' : (currentFmtType === 'hansoku' ? '販促スタイル提案資料（仮FMT）' : 'アイテムご提案資料'));
     var slideTypeLabel = currentSlideType === '6' ? '画像メイン' : '詳細紹介';
     logEvent('成果物', '資料作成', title + '（' + fmtLabelForLog + '／' + slideTypeLabel + '）', 'アイテム数:' + items.length);
 
@@ -683,7 +683,7 @@ async function modifyAndDownloadPptx(fmtB64, memoTexts, params) {
 
   // ===== スライド1（タイトル）=====
   var s1 = await zip.file('ppt/slides/slide1.xml').async('string');
-  if (currentFmtType === 'jisseki') {
+  if (currentFmtType === 'jisseki' || currentFmtType === 'uratori') {
     // 表紙は「○○実績」＋「ご紹介」＋「資料」の3パーツ。○○部分だけをタイトルに置き換える
     s1 = s1.replace('<a:t>○○実績</a:t>', '<a:t>' + escapeXml(title) + '実績</a:t>');
   } else {
@@ -837,6 +837,11 @@ function escapeXml(str) {
       <h3>実績資料</h3>
       <p>条件をもとに決定商品データをまとめる</p>
     </button>
+    <button class="menu-btn" onclick="showPanel('uratori', this)">
+      <div class="icon">🐸</div>
+      <h3>裏取りDB検索</h3>
+      <p>単価・数量・アイテムで裏取りDBを絞り込む</p>
+    </button>
     <button class="menu-btn" onclick="showPanel('hansoku', this)">
       <div class="icon">🛍️</div>
       <h3>販促スタイル</h3>
@@ -978,6 +983,49 @@ function escapeXml(str) {
     </div>
     <div id="reportCreateRow" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
       <button onclick="openPptxModal('jisseki')" style="padding:10px 24px;background:#059669;color:white;border:none;border-radius:8px;font-size:14px;cursor:pointer;">📊 この結果で実績資料を作成</button>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-uratori">
+    <h2>🐸 裏取りDB検索</h2>
+
+    <div class="form-section">
+      <label>仕入単価（円）</label>
+      <div class="form-row">
+        <input type="number" id="uratoriCostMin" placeholder="下限" min="0" />
+        <span>〜</span>
+        <input type="number" id="uratoriCostMax" placeholder="上限" min="0" />
+        <span>円</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <label>数量（個）</label>
+      <div class="form-row">
+        <input type="number" id="uratoriQtyMin" placeholder="下限" min="0" />
+        <span>〜</span>
+        <input type="number" id="uratoriQtyMax" placeholder="上限" min="0" />
+        <span>個</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <label>アイテム</label>
+      <input type="text" id="uratoriItem" placeholder="例：アクリルスタンド、夏向け冷感グッズ" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none;box-sizing:border-box;" />
+    </div>
+
+    <div class="form-btn-row">
+      <button onclick="sendUratoriSearch()" id="uratoriBtn">裏取りDBを検索</button>
+      <button onclick="resetUratoriSearch()" class="reset-btn">リセット</button>
+    </div>
+
+    <div class="suggest-results" id="uratoriResults"></div>
+    <div id="uratoriCheckList" style="display:none;margin-top:12px;"></div>
+    <div id="uratoriMoreRow" style="display:none;margin-top:8px;">
+      <button onclick="sendUratoriSearchMore()" style="padding:8px 20px;background:#1a3a5c;color:white;border:none;border-radius:8px;font-size:13px;cursor:pointer;">もっと見せて</button>
+    </div>
+    <div id="uratoriCreateRow" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
+      <button onclick="openPptxModal('uratori')" style="padding:10px 24px;background:#059669;color:white;border:none;border-radius:8px;font-size:14px;cursor:pointer;">📊 この結果で資料を作成</button>
     </div>
   </div>
 
@@ -1147,11 +1195,11 @@ function extractKeywords(question) {
     .replace(/[？?！!。、「」『』・]/g, ' ')   // 句読点・記号を除去
     .replace(/決定商品|裏取り|データベース/g, ' ')
     .replace(/から|最近|情報|出して|教えて|ください|について|とは|どこ|いくら|どんな/g, ' ')
-    .replace(/仕入れ|仕入|コスト|単価|価格|金額|費用/g, ' ') // 価格系の言葉を除去（商品名だけ残す）
+    .replace(/仕入先|仕入れ|仕入|コスト|単価|価格|金額|費用/g, ' ') // 価格系の言葉を除去（「仕入先」を丸ごと除去し、「先」が単独で残らないようにする）
     .replace(/の|は|を|に|で|が|と|まで|も|や/g, ' ');
 
-  // 空白で分割して2文字以上の単語だけ残す
-  var words = kw.trim().split(/\s+/).filter(function(w) { return w.length >= 2; });
+  // 空白で分割して1文字以上の単語だけ残す（「飴」「傘」など1文字の商品名も拾えるように）
+  var words = kw.trim().split(/\s+/).filter(function(w) { return w.length >= 1; });
 
   // 重複を除去して返す
   return [...new Set(words)];
@@ -1220,20 +1268,24 @@ function pageToTextShiire(page) {
     if (p[field] && p[field].email) return p[field].email;
     return rt(field);
   }
+  function phoneField(field) {
+    if (p[field] && p[field].phone_number) return p[field].phone_number;
+    return rt(field);
+  }
 
   var name = (p['仕入先名'] && p['仕入先名'].title && p['仕入先名'].title[0]) ? p['仕入先名'].title[0].text.content : '';
   var industry = (p['業種'] && p['業種'].select) ? p['業種'].select.name : '';
   var category = rt('商品分類');
-  var itemType = rt('商品種別（集計用）');
+  var itemType = rt('商品種別');
   var detail = rt('商品詳細');
   var staff1 = rt('仕入先担当者①');
   var mail1 = emailField('メール①');
-  var tel1 = rt('電話番号(仕入先担当者)①');
+  var tel1 = phoneField('電話番号①');
   var staff2 = rt('仕入先担当者②');
   var mail2 = emailField('メール②');
-  var tel2 = rt('電話番号(仕入先担当者)②');
-  var note = rt('備考（営業編集可）');
-  var orderNote = rt('発注時注意点（営業編集可）');
+  var tel2 = phoneField('電話番号②');
+  var note = rt('備考');
+  var orderNote = rt('発注時注意点');
   var costSheet = (p['コスト表有無'] && p['コスト表有無'].select) ? p['コスト表有無'].select.name : '';
   var costUpdated = rt('コスト表更新期日');
   var costLocation = rt('コスト表格納先');
@@ -1764,6 +1816,137 @@ async function sendReportMore() {
   }
 }
 
+// ========== 裏取りDB検索 ==========
+var uratoriAllData = [];
+var uratoriShownCount = 0;
+var URATORI_SEARCH_PAGE_SIZE = 30;
+
+function resetUratoriSearch() {
+  document.getElementById('uratoriCostMin').value = '';
+  document.getElementById('uratoriCostMax').value = '';
+  document.getElementById('uratoriQtyMin').value = '';
+  document.getElementById('uratoriQtyMax').value = '';
+  document.getElementById('uratoriItem').value = '';
+  uratoriAllData = [];
+  uratoriShownCount = 0;
+  var results = document.getElementById('uratoriResults');
+  results.classList.remove('active');
+  results.innerHTML = '';
+  document.getElementById('uratoriCheckList').style.display = 'none';
+  document.getElementById('uratoriMoreRow').style.display = 'none';
+  document.getElementById('uratoriCreateRow').style.display = 'none';
+}
+
+async function sendUratoriSearch() {
+  var costMin = document.getElementById('uratoriCostMin').value;
+  var costMax = document.getElementById('uratoriCostMax').value;
+  var qtyMin = document.getElementById('uratoriQtyMin').value;
+  var qtyMax = document.getElementById('uratoriQtyMax').value;
+  var item = document.getElementById('uratoriItem').value.trim();
+
+  if (!costMin && !costMax && !qtyMin && !qtyMax && !item) {
+    alert('条件を1つ以上入力してください。');
+    return;
+  }
+
+  var btn = document.getElementById('uratoriBtn');
+  var results = document.getElementById('uratoriResults');
+  btn.disabled = true;
+  results.classList.add('active');
+  results.innerHTML = '🔍 裏取りDBを検索中...';
+
+  // 条件テキスト生成
+  var conditions = [];
+  if (costMin && costMax) conditions.push('仕入単価' + costMin + '円〜' + costMax + '円');
+  else if (costMin) conditions.push('仕入単価' + costMin + '円以上');
+  else if (costMax) conditions.push('仕入単価' + costMax + '円以下');
+  if (qtyMin && qtyMax) conditions.push('数量' + qtyMin + '個〜' + qtyMax + '個');
+  else if (qtyMin) conditions.push('数量' + qtyMin + '個以上');
+  else if (qtyMax) conditions.push('数量' + qtyMax + '個以下');
+  if (item) conditions.push('アイテム：' + item);
+  var conditionText = conditions.join('、');
+
+  try {
+    var numOpts = {};
+    if (costMin) numOpts.cost_min = parseFloat(costMin);
+    if (costMax) numOpts.cost_max = parseFloat(costMax);
+    if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
+    if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
+
+    // アイテム欄を「検索ワード変換辞書」で属性タグに変換（辞書引きのみ）。
+    // 変換できればハードフィルターとして使い、できなければ商品名のフリーワード一致にフォールバックする
+    var itemAttrTags = item ? await interpretThemeToAttributeTags(item) : [];
+    if (itemAttrTags.length > 0) numOpts.attribute_tags = itemAttrTags;
+    var keywords = (item && itemAttrTags.length === 0) ? extractKeywords(item) : [];
+    var primaryKeyword = keywords[0] || '';
+
+    var uratoriResultsRaw = await searchNotionDB(URATORI_DB_ID, primaryKeyword, numOpts);
+    uratoriResultsRaw = dedupePages(uratoriResultsRaw, 'uratori');
+    uratoriAllData = uratoriResultsRaw.map(function(r) { return pageToText(r, 'uratori'); });
+    uratoriShownCount = Math.min(URATORI_SEARCH_PAGE_SIZE, uratoriAllData.length);
+    var notionContext = uratoriAllData.length > 0 ? uratoriAllData.slice(0, uratoriShownCount).join('\n') : 'データが見つかりませんでした';
+
+    var res = await fetch(WORKER_URL + '/gemini/uratori-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conditions: conditionText, notionContext: notionContext })
+    });
+    var data = await res.json();
+    results.innerHTML = formatAnswer(data.answer || 'エラーが発生しました。');
+    buildCheckList('uratori');
+    document.getElementById('uratoriCreateRow').style.display = 'block';
+    var uratoriRemaining = uratoriAllData.length - uratoriShownCount;
+    var uratoriMoreRow = document.getElementById('uratoriMoreRow');
+    if (uratoriRemaining > 0) {
+      uratoriMoreRow.style.display = 'block';
+      uratoriMoreRow.querySelector('button').textContent = 'もっと見せて（他に' + uratoriRemaining + '件）';
+    } else {
+      uratoriMoreRow.style.display = 'none';
+    }
+
+  } catch (e) {
+    results.innerHTML = 'エラー: ' + e.message;
+    logEvent('エラー', '裏取りDB検索', e.message, e.stack || '');
+  }
+
+  btn.disabled = false;
+}
+
+async function sendUratoriSearchMore() {
+  if (uratoriAllData.length <= uratoriShownCount) return;
+  var results = document.getElementById('uratoriResults');
+  var moreRow = document.getElementById('uratoriMoreRow');
+  var btn = moreRow.querySelector('button');
+  btn.disabled = true;
+  btn.textContent = '取得中...';
+
+  var nextItems = uratoriAllData.slice(uratoriShownCount, uratoriShownCount + URATORI_SEARCH_PAGE_SIZE);
+  uratoriShownCount += nextItems.length;
+  var notionContext = nextItems.join('\n');
+
+  try {
+    var res = await fetch(WORKER_URL + '/gemini/uratori-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conditions: '追加表示', notionContext: notionContext })
+    });
+    var data = await res.json();
+    results.innerHTML += '\n\n' + formatAnswer(data.answer || 'エラーが発生しました。');
+    buildCheckList('uratori');
+    var remaining = uratoriAllData.length - uratoriShownCount;
+    if (remaining > 0) {
+      btn.disabled = false;
+      btn.textContent = 'もっと見せて（他に' + remaining + '件）';
+    } else {
+      moreRow.style.display = 'none';
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'もっと見せて';
+    logEvent('エラー', '裏取りDB検索', e.message, e.stack || '');
+  }
+}
+
 // ========== 販促スタイル（β） ==========
 // 販促スタイルの商品データ（{name, price, moq, imageUrl, ...}）を、資料作成パイプラインで
 // 使える共通のitem形状に変換する。
@@ -2022,8 +2205,10 @@ async function calculateHansokuQuote() {
 // チェックリストを構築
 // 検索結果テキストに反映済みの件数（shownCount）までに絞る。「もっと見せて」で増えた分だけ追従する
 function buildCheckList(tab) {
-  var rawData = tab === 'suggest' ? suggestAllData.slice(0, suggestShownCount) : reportAllData.slice(0, reportShownCount);
-  var listId = tab === 'suggest' ? 'suggestCheckList' : 'reportCheckList';
+  var rawData = tab === 'suggest' ? suggestAllData.slice(0, suggestShownCount) :
+    tab === 'uratori' ? uratoriAllData.slice(0, uratoriShownCount) :
+    reportAllData.slice(0, reportShownCount);
+  var listId = tabToCheckListId(tab);
   var container = document.getElementById(listId);
   if (!container || rawData.length === 0) return;
 
@@ -2045,7 +2230,7 @@ function buildCheckList(tab) {
 
   items.forEach(function(item, i) {
     var src = item.isKettei ? '決定商品DB' : '裏取りDB';
-    var priceLabel = tab === 'report' ? '資料表記' : '';
+    var priceLabel = (tab === 'report' || tab === 'uratori') ? '資料表記' : '';
     var priceText = item.cost ? priceLabel + calcRefPrice(item.cost) + '円程度' : '要確認';
     var qtyText = item.qty ? roundUpQty(item.qty) + '個' : '要確認';
     html += '<div class="check-item">';
@@ -2077,6 +2262,7 @@ function tabToCheckListId(tab) {
   if (tab === 'suggest') return 'suggestCheckList';
   if (tab === 'report') return 'reportCheckList';
   if (tab === 'hansoku') return 'hansokuCheckList';
+  if (tab === 'uratori') return 'uratoriCheckList';
   return null;
 }
 

@@ -840,7 +840,7 @@ export default {
             shiireFilters.push({ or: [
               { property: "仕入先名", title: { contains: keyword } },
               { property: "商品分類", rich_text: { contains: keyword } },
-              { property: "商品種別（集計用）", rich_text: { contains: keyword } },
+              { property: "商品種別", rich_text: { contains: keyword } },
               { property: "商品詳細", rich_text: { contains: keyword } },
             ]});
           }
@@ -1574,6 +1574,46 @@ No.2 ...
         });
       }
 
+      if (path === "/gemini/uratori-search" && request.method === "POST") {
+        const { conditions, notionContext } = await request.json();
+
+        const prompt = `あなたはTR大阪（ノベルティ・販促グッズの営業会社）の営業支援AIです。
+裏取りDB（仕入コスト調査の記録）から、条件に合う仕入情報を調べるお手伝いをします。
+
+【検索条件】
+${conditions}
+
+【裏取りDBの検索結果】
+${notionContext}
+
+【回答ルール】
+・マークダウン記号（**や*や#）は絶対に使わない
+・上記【裏取りDBの検索結果】に無い商品名・数値は絶対に創作しない
+・条件に合う実績を最大20件リストで提示する
+・各実績は以下のフォーマットで書く：
+
+No.1 商品名
+・仕入単価：○○円　数量：○○個
+・仕入先：○○
+・スケジュール：○○
+
+No.2 ...
+
+・データにない項目は「不明」と書く
+・件数サマリは書かない`;
+
+        const data = await callGemini(env, [{ role: "user", parts: [{ text: prompt }] }]);
+        const answer = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "回答を取得できませんでした";
+        if (isGeminiFailure(answer)) {
+          ctx.waitUntil(logToNotion(env, "エラー", "裏取りDB検索", "Gemini応答取得失敗", JSON.stringify(data)));
+        } else if (conditions !== "追加表示") {
+          ctx.waitUntil(logToNotion(env, "検索", "裏取りDB検索", conditions, ""));
+        }
+        return new Response(JSON.stringify({ answer }), {
+          headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+        });
+      }
+
       if (path === "/gemini/suggest" && request.method === "POST") {
         const { conditions, notionContext, mode } = await request.json();
 
@@ -1652,14 +1692,12 @@ No.2 ...
 【検索結果（裏取りDB・仕入先DB）】
 ${notionContext}
 
-【情報源の優先順位】
-・裏取りDB（実際の仕入実績データ）を最優先で使う
-・裏取りDBに情報がない、または仕入先の候補を広げたい場合に仕入先DBの情報を補足として使う
-
-【仕入先DBの扱い方】
+【情報源の扱い方】
+・上記【検索結果】に実在しない仕入先名・商品名・数値は絶対に創作しない。データが空、または「データが見つかりませんでした」となっている場合は、正直に「該当する情報はありませんでした」とだけ書き、それらしい候補をでっち上げない
+・裏取りDB（実際の仕入実績データ）と仕入先DB（取扱商材データ）は、どちらか一方ではなく必ず両方の検索結果を確認し、それぞれの結果をセクションを分けて提示する（片方に何も無くても、もう片方が空欄になっているだけで自動的に省略しない）
 ・仕入先DBは「その仕入先がどんな商材を取り扱えるか」（業種・商品分類・商品種別・商品詳細）の情報。質問された商品を取り扱えそうな仕入先を探す時に使う
 ・要注意仕入先に該当する仕入先（取引停止・反社・情報開示不可など）は絶対に紹介しない
-・仕入先候補のリストには、どのデータ元から出てきた候補か（裏取りDB／仕入先DB／決定商品DB）を必ず明記する。仕入先DB由来の候補で、コスト表有無が「あり」の場合は「コスト表あり」も併記する
+・仕入先DB由来の候補で、コスト表有無が「あり」の場合は「コスト表あり」も併記する
 ・コスト表の詳細（更新日・格納先アドレス）は、初回の回答では書かない。ユーザーがコスト表の詳細を求めてきた時だけ、更新日と格納先アドレスを共有する
 ・仕入先の連絡先（担当者・メール・電話）は、初回の回答では書かず「連絡先が必要であればコメントください」と一言添える程度に留める。ユーザーが連絡先を求めてきた時だけ、以下のフォーマットで共有する（担当者①のメール・電話は必ず担当者①の情報、担当者②のメール・電話は必ず担当者②の情報とセットで書く。担当者を取り違えないこと）：
 
@@ -1671,25 +1709,22 @@ ${notionContext}
 【回答ルール】
 ・マークダウン記号（**や*や#）は絶対に使わない
 ・箇条書きは「・」と「→」を使う
-・必ず最初の1行にサマリを書く（社数は数えて言わない。例：「靴下の仕入先候補をご案内します。」）
+・必ず最初の1行にサマリを書く（社数は数えて言わない。例：「紅茶の仕入先候補をご案内します。」）
 ・数量の質問（「○個以下」「○個以上」「○個程度」）は範囲で解釈すること
   例：「1000個以下」と聞かれたら500個や300個のデータも該当する
   例：「500個程度」と聞かれたら300〜1000個程度のデータも参考として提示する
-・フォーマットは以下を使う：
+・フォーマットは必ず以下の2セクション構成にする（該当データが無いセクションも省略せず、見出しの下に「該当する情報はありませんでした」と明記する）：
 
-仕入先候補：
-・仕入先名A（裏取りDB）
-・仕入先名B（仕入先DB／コスト表あり）
+■ 裏取りDBからの情報（仕入実績）
+・仕入先名A
+　→ 商品名 ／ サイズ・仕様 ／ 数量 ／ 仕入単価
+　→ 商品名 ／ サイズ・仕様 ／ 数量 ／ 仕入単価
+（1社につき最大3件、最大3社。無ければ「裏取りDBからの情報：該当する仕入実績はありませんでした」とだけ書く）
 
-詳細情報：
-
-＜仕入先名A＞
-・商品名 ／ サイズ・仕様 ／ 数量 ／ 仕入単価
-・商品名 ／ サイズ・仕様 ／ 数量 ／ 仕入単価
-（1社につき最大3件）
-
-＜仕入先名B＞
-・取扱商材：業種／商品分類／商品種別・商品詳細の要約
+■ 仕入先DBからの情報（取扱可能な仕入先）
+・仕入先名B（コスト表あり／なし）
+　→ 取扱商材：業種／商品分類／商品種別・商品詳細の要約
+（最大3社。無ければ「仕入先DBからの情報：該当する仕入先はありませんでした」とだけ書く）
 
 ・データにない項目は「不明」と書く
 ・前の会話の内容も踏まえて回答する`;
@@ -1704,7 +1739,8 @@ ${notionContext}
         if (contents.length === 0) {
           contents.push({ role: 'user', parts: [{ text: systemPrompt + '\n\n【質問】\n' + question }] });
         } else {
-          contents.push({ role: 'user', parts: [{ text: '【最新の検索データ】\n' + notionContext + '\n\n【質問】\n' + question }] });
+          // 2回目以降もsystemPromptを毎回含める（連絡先フォーマット等、履歴だけでは維持されない指示があるため）
+          contents.push({ role: 'user', parts: [{ text: systemPrompt + '\n\n【最新の検索データ】\n' + notionContext + '\n\n【質問】\n' + question }] });
         }
 
         const data = await callGemini(env, contents);
@@ -1820,10 +1856,10 @@ ${notionContext}
             parts: [{ text: systemPrompt + '\n\n【質問】\n' + question }]
           });
         } else {
-          // 2回目以降：データを更新して質問を送る
+          // 2回目以降もsystemPromptを毎回含める（連絡先フォーマット等、履歴だけでは維持されない指示があるため）
           contents.push({
             role: 'user',
-            parts: [{ text: `【最新の検索データ】\n${notionContext}\n\n【質問】\n${question}` }]
+            parts: [{ text: `${systemPrompt}\n\n【最新の検索データ】\n${notionContext}\n\n【質問】\n${question}` }]
           });
         }
 
