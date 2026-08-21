@@ -817,7 +817,7 @@ function escapeXml(str) {
   </header>
 
   <div class="menu-grid">
-    <button class="menu-btn" onclick="showPanel('uratori', this)">
+    <button class="menu-btn active" onclick="showPanel('uratori', this)">
       <div class="icon">🐸</div>
       <h3>裏取りDB検索</h3>
       <p>単価・数量・アイテムで裏取りDBを絞り込む</p>
@@ -837,7 +837,7 @@ function escapeXml(str) {
       <h3>アイテム提案</h3>
       <p>予算・条件からアイテムをピックアップ</p>
     </button>
-    <button class="menu-btn active" onclick="showPanel('chat', this)">
+    <button class="menu-btn" onclick="showPanel('chat', this)">
       <div class="icon">💬</div>
       <h3>一問一答</h3>
       <p>商品の価格感や仕入先を気軽に質問</p>
@@ -849,7 +849,7 @@ function escapeXml(str) {
     </button>
   </div>
 
-  <div class="panel active" id="panel-chat">
+  <div class="panel" id="panel-chat">
     <h2>💬 一問一答</h2>
     <div class="chat-messages" id="chatMessages">
       <div class="message ai">
@@ -986,7 +986,7 @@ function escapeXml(str) {
     </div>
   </div>
 
-  <div class="panel" id="panel-uratori">
+  <div class="panel active" id="panel-uratori">
     <h2>🐸 裏取りDB検索</h2>
 
     <div class="form-section">
@@ -1297,13 +1297,20 @@ function pageToTextShiire(page) {
     ' コスト表有無:' + costSheet + ' コスト表更新日:' + costUpdated + ' コスト表格納先:' + costLocation;
 }
 
-// 仕入先DBの検索結果を、電話番号①が登録されている仕入先が先に来るように並び替える
-// （TELが無い仕入先は連絡が取れず案内価値が低いため非優先にする）
+// 仕入先DBの検索結果を、①電話番号①が登録されている仕入先を優先、②その中で仕入先コードが
+// 小さい順、の2段階で並び替える（TELが無い仕入先は連絡が取れず案内価値が低いため非優先にする）
 function sortShiireByPhone(pages) {
+  function supplierCode(page) {
+    var rt = page.properties['仕入先コード'] && page.properties['仕入先コード'].rich_text;
+    var text = (rt && rt[0]) ? rt[0].text.content : '';
+    var n = parseFloat(text);
+    return isNaN(n) ? Infinity : n;
+  }
   return pages.slice().sort(function(a, b) {
     var telA = (a.properties['電話番号①'] && a.properties['電話番号①'].phone_number) ? 1 : 0;
     var telB = (b.properties['電話番号①'] && b.properties['電話番号①'].phone_number) ? 1 : 0;
-    return telB - telA;
+    if (telA !== telB) return telB - telA;
+    return supplierCode(a) - supplierCode(b);
   });
 }
 
