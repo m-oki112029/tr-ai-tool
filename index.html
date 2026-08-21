@@ -817,30 +817,30 @@ function escapeXml(str) {
   </header>
 
   <div class="menu-grid">
-    <button class="menu-btn active" onclick="showPanel('chat', this)">
-      <div class="icon">💬</div>
-      <h3>一問一答</h3>
-      <p>商品の価格感や仕入先を気軽に質問</p>
-    </button>
-    <button class="menu-btn" onclick="showPanel('suggest', this)">
-      <div class="icon">✨</div>
-      <h3>アイテム提案</h3>
-      <p>予算・条件からアイテムをピックアップ</p>
-    </button>
-    <button class="menu-btn" onclick="showPanel('supplier', this)">
-      <div class="icon">🏭</div>
-      <h3>仕入先検索</h3>
-      <p>商品名や仕様から仕入先を検索</p>
+    <button class="menu-btn" onclick="showPanel('uratori', this)">
+      <div class="icon">🐸</div>
+      <h3>裏取りDB検索</h3>
+      <p>単価・数量・アイテムで裏取りDBを絞り込む</p>
     </button>
     <button class="menu-btn" onclick="showPanel('report', this)">
       <div class="icon">📊</div>
       <h3>実績資料</h3>
       <p>条件をもとに決定商品データをまとめる</p>
     </button>
-    <button class="menu-btn" onclick="showPanel('uratori', this)">
-      <div class="icon">🐸</div>
-      <h3>裏取りDB検索</h3>
-      <p>単価・数量・アイテムで裏取りDBを絞り込む</p>
+    <button class="menu-btn" onclick="showPanel('supplier', this)">
+      <div class="icon">🏭</div>
+      <h3>仕入先検索</h3>
+      <p>商品名や仕様から仕入先を検索</p>
+    </button>
+    <button class="menu-btn" onclick="showPanel('suggest', this)">
+      <div class="icon">✨</div>
+      <h3>アイテム提案</h3>
+      <p>予算・条件からアイテムをピックアップ</p>
+    </button>
+    <button class="menu-btn active" onclick="showPanel('chat', this)">
+      <div class="icon">💬</div>
+      <h3>一問一答</h3>
+      <p>商品の価格感や仕入先を気軽に質問</p>
     </button>
     <button class="menu-btn" onclick="showPanel('hansoku', this)">
       <div class="icon">🛍️</div>
@@ -1297,6 +1297,16 @@ function pageToTextShiire(page) {
     ' コスト表有無:' + costSheet + ' コスト表更新日:' + costUpdated + ' コスト表格納先:' + costLocation;
 }
 
+// 仕入先DBの検索結果を、電話番号①が登録されている仕入先が先に来るように並び替える
+// （TELが無い仕入先は連絡が取れず案内価値が低いため非優先にする）
+function sortShiireByPhone(pages) {
+  return pages.slice().sort(function(a, b) {
+    var telA = (a.properties['電話番号①'] && a.properties['電話番号①'].phone_number) ? 1 : 0;
+    var telB = (b.properties['電話番号①'] && b.properties['電話番号①'].phone_number) ? 1 : 0;
+    return telB - telA;
+  });
+}
+
 // 💡 共通の重複排除ヘルパー
 // 同一商品名のページが複数ある場合（数量パターン違いなど）、
 // 数量が一番少ないものだけを残す。全タブ共通で使う。
@@ -1357,7 +1367,7 @@ async function sendChat() {
     var allData = [];
     for (var i = 0; i < results.length; i++) {
       if (results[i].type === 'shiire') {
-        allData = allData.concat(results[i].results.slice(0, 8).map(pageToTextShiire).filter(Boolean));
+        allData = allData.concat(sortShiireByPhone(results[i].results).slice(0, 8).map(pageToTextShiire).filter(Boolean));
         continue;
       }
       // 商品名重複排除（最小数量の1件のみ残す）
@@ -1486,7 +1496,7 @@ async function sendSupplier() {
 
       // 仕入先DBも補足情報として検索（取扱商材が合致する仕入先の候補出し用）。以降の全ターンで使い回すため保持しておく
       var shiireResults = await searchNotionDB(SHIIRE_DB_ID, primaryKeyword);
-      supplierShiireContext = shiireResults.slice(0, 8).map(pageToTextShiire).filter(Boolean).join('\n');
+      supplierShiireContext = sortShiireByPhone(shiireResults).slice(0, 8).map(pageToTextShiire).filter(Boolean).join('\n');
       supplierSearchDone = true;
 
       notionContext = [uratoriContext, supplierShiireContext].filter(Boolean).join('\n');
