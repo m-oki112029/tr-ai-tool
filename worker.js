@@ -598,17 +598,21 @@ export default {
   // 新規登録された商品（業界タグ／属性タグ処理済み=OFF）を検出し、上限に達するかキューが尽きるまでバッチ処理を繰り返す。
   async scheduled(event, env, ctx) {
     const MAX_BATCHES = 10; // 1回のCron実行あたりの上限（日次の新規登録数はごく少数の想定のため十分）
-    for (let i = 0; i < MAX_BATCHES; i++) {
-      const result = await runIndustryTagBatch(env, ctx, 50);
-      if (result.done || result.processed === 0) break;
-    }
-    for (let i = 0; i < MAX_BATCHES; i++) {
-      const result = await runAttributeTagBatch(env, ctx, KETTEI_DB_ID, "商材名", 50);
-      if (result.done || result.processed === 0) break;
-    }
-    for (let i = 0; i < MAX_BATCHES; i++) {
-      const result = await runAttributeTagBatch(env, ctx, URATORI_DB_ID, "商品名", 50);
-      if (result.done || result.processed === 0) break;
+    // 1つのタスクが例外を投げても他のタスクを止めない・失敗を必ずNotionログに残す
+    const tasks = [
+      { name: "業界タグ", run: () => runIndustryTagBatch(env, ctx, 50) },
+      { name: "属性タグ（決定商品DB）", run: () => runAttributeTagBatch(env, ctx, KETTEI_DB_ID, "商材名", 50) },
+      { name: "属性タグ（裏取りDB）", run: () => runAttributeTagBatch(env, ctx, URATORI_DB_ID, "商品名", 50) },
+    ];
+    for (const task of tasks) {
+      try {
+        for (let i = 0; i < MAX_BATCHES; i++) {
+          const result = await task.run();
+          if (result.done || result.processed === 0) break;
+        }
+      } catch (e) {
+        ctx.waitUntil(logToNotion(env, "エラー", "システム", `Cron定期実行に失敗（${task.name}）`, (e && e.message) || String(e)));
+      }
     }
   },
 
