@@ -1014,6 +1014,18 @@ function escapeXml(str) {
       <input type="text" id="uratoriItem" placeholder="例：アクリルスタンド、夏向け冷感グッズ" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none;box-sizing:border-box;" />
     </div>
 
+    <div class="form-section">
+      <label>仕入先区分（両方チェック・両方未チェックの場合は絞り込みなし）</label>
+      <div style="display:flex;gap:16px;font-size:13px;">
+        <label style="display:flex;align-items:center;gap:6px;font-weight:normal;cursor:pointer;">
+          <input type="checkbox" id="uratoriSupplierDomestic" style="width:16px;height:16px;cursor:pointer;">国内
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:normal;cursor:pointer;">
+          <input type="checkbox" id="uratoriSupplierOverseas" style="width:16px;height:16px;cursor:pointer;">海外
+        </label>
+      </div>
+    </div>
+
     <div class="form-btn-row">
       <button onclick="sendUratoriSearch()" id="uratoriBtn">裏取りDBを検索</button>
       <button onclick="resetUratoriSearch()" class="reset-btn">リセット</button>
@@ -1217,6 +1229,7 @@ async function searchNotionDB(dbId, kw, opts) {
     if (opts.qty_max !== undefined) body.qty_max = opts.qty_max;
     if (opts.industry_tags && opts.industry_tags.length > 0) body.industry_tags = opts.industry_tags;
     if (opts.attribute_tags && opts.attribute_tags.length > 0) body.attribute_tags = opts.attribute_tags;
+    if (opts.supplier_type) body.supplier_type = opts.supplier_type;
     var response = await fetch(WORKER_URL + '/notion/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1847,6 +1860,8 @@ function resetUratoriSearch() {
   document.getElementById('uratoriQtyMin').value = '';
   document.getElementById('uratoriQtyMax').value = '';
   document.getElementById('uratoriItem').value = '';
+  document.getElementById('uratoriSupplierDomestic').checked = false;
+  document.getElementById('uratoriSupplierOverseas').checked = false;
   uratoriAllData = [];
   uratoriShownCount = 0;
   var results = document.getElementById('uratoriResults');
@@ -1863,8 +1878,12 @@ async function sendUratoriSearch() {
   var qtyMin = document.getElementById('uratoriQtyMin').value;
   var qtyMax = document.getElementById('uratoriQtyMax').value;
   var item = document.getElementById('uratoriItem').value.trim();
+  var wantDomestic = document.getElementById('uratoriSupplierDomestic').checked;
+  var wantOverseas = document.getElementById('uratoriSupplierOverseas').checked;
+  // 片方だけチェックの場合のみ絞り込む（両方・両方未チェックは絞り込みなし＝全件対象）
+  var supplierType = (wantDomestic && !wantOverseas) ? '国内' : (wantOverseas && !wantDomestic) ? '海外' : '';
 
-  if (!costMin && !costMax && !qtyMin && !qtyMax && !item) {
+  if (!costMin && !costMax && !qtyMin && !qtyMax && !item && !supplierType) {
     alert('条件を1つ以上入力してください。');
     return;
   }
@@ -1884,6 +1903,7 @@ async function sendUratoriSearch() {
   else if (qtyMin) conditions.push('数量' + qtyMin + '個以上');
   else if (qtyMax) conditions.push('数量' + qtyMax + '個以下');
   if (item) conditions.push('アイテム：' + item);
+  if (supplierType) conditions.push('仕入先区分：' + supplierType);
   var conditionText = conditions.join('、');
 
   try {
@@ -1892,6 +1912,7 @@ async function sendUratoriSearch() {
     if (costMax) numOpts.cost_max = parseFloat(costMax);
     if (qtyMin) numOpts.qty_min = parseInt(qtyMin);
     if (qtyMax) numOpts.qty_max = parseInt(qtyMax);
+    if (supplierType) numOpts.supplier_type = supplierType;
 
     // アイテム欄を「検索ワード変換辞書」で属性タグに変換（辞書引きのみ）。
     // 変換できればハードフィルターとして使い、できなければ商品名のフリーワード一致にフォールバックする

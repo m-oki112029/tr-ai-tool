@@ -836,6 +836,7 @@ export default {
         const qtyMax = body.qty_max ?? null;
         const industryTags = Array.isArray(body.industry_tags) ? body.industry_tags.filter(Boolean) : [];
         const attributeTags = Array.isArray(body.attribute_tags) ? body.attribute_tags.filter(Boolean) : [];
+        const supplierType = body.supplier_type === "国内" || body.supplier_type === "海外" ? body.supplier_type : null;
 
         // 仕入先DB（決定商品DB・裏取りDBとはフィールド構成が全く異なるため専用ロジック）
         if (dbId === SHIIRE_DB_ID) {
@@ -932,6 +933,11 @@ export default {
         // 属性タグフィルター（複数選択時はOR条件・決定商品DB・裏取りDB両方で有効）
         if (attributeTags.length > 0) {
           filters.push({ or: attributeTags.map((tag) => ({ property: "属性タグ", multi_select: { contains: tag } })) });
+        }
+
+        // 仕入先区分フィルター（国内／海外・裏取りDBのみ有効なプロパティ）
+        if (isUratori && supplierType) {
+          filters.push({ property: "仕入先区分", select: { equals: supplierType } });
         }
 
         // フィルターをandで結合
