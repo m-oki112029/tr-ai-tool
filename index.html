@@ -2364,9 +2364,16 @@ function buildCheckList(tab) {
     html += '<label for="chk_' + listId + '_' + i + '">';
     html += '<strong>' + (item.name || '商品名不明') + '</strong>';
     if (tab === 'uratori') {
+      // 仕入先名は「株式会社　◯◯」のように全角スペースを含むことがあり、テキスト解析（item.supplier）だと
+      // 最初のスペースで切れてしまうため、Notionの生データから直接フルネームを取得する
+      var rawPage = (typeof item.sourceIndex === 'number') ? uratoriRawPages[item.sourceIndex] : null;
+      var rawSupplierProp = rawPage && rawPage.properties && rawPage.properties['仕入先'];
+      var supplierFull = (rawSupplierProp && rawSupplierProp.rich_text && rawSupplierProp.rich_text[0])
+        ? rawSupplierProp.rich_text[0].text.content
+        : item.supplier;
       var costText = item.cost ? item.cost + '円' : '要確認';
       var scheduleText = item.schedule || '不明';
-      html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + item.supplier + ' / ' + qtyText + ' / ' + costText + ' / ' + scheduleText + ' / ' + priceText + '）</span>';
+      html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + (supplierFull || '要確認') + ' / ' + qtyText + ' / ' + costText + ' / ' + scheduleText + ' / ' + priceText + '）</span>';
     } else {
       html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + qtyText + ' / ' + priceText + '）</span>';
     }
