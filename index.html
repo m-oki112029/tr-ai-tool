@@ -265,7 +265,7 @@ function generateUratoriExcel() {
     return;
   }
 
-  var headers = ['商品名', '仕入先', '数量', '仕入単価', 'スケジュール', '印刷', '校正代', '版代',
+  var headers = ['商品名', '詳細', '仕入先', '数量', '仕入単価', 'スケジュール', '印刷', '校正代', '版代',
     '単価（本体代）', '単価（印刷代）', '単価（内職代）', '単価（副資材代）', 'その他一式金額', '作成日'];
   var rows = [headers];
 
@@ -278,11 +278,17 @@ function generateUratoriExcel() {
     function num(field) {
       return (p[field] && typeof p[field].number === 'number') ? p[field].number : '';
     }
-    var name = (p['商品名'] && p['商品名'].title && p['商品名'].title[0]) ? p['商品名'].title[0].text.content : (item.name || '');
+    var fullName = (p['商品名'] && p['商品名'].title && p['商品名'].title[0]) ? p['商品名'].title[0].text.content : (item.name || '');
+    // 最初の空白（全角スペース含む）で「商品名」と「詳細」（サイズ・仕様等）に分割する。
+    // 検索結果一覧に表示している短い商品名も同じ区切り方（extractItemsFromResults）をしているので合わせる
+    var nameSplit = fullName.match(/^(\S+)\s*([\s\S]*)$/);
+    var name = nameSplit ? nameSplit[1] : fullName;
+    var detail = nameSplit ? nameSplit[2].trim() : '';
     var createdDate = (p['作成日'] && p['作成日'].date && p['作成日'].date.start) ? p['作成日'].date.start : '';
 
     rows.push([
       name,
+      detail,
       rt('仕入先') || item.supplier || '',
       num('数量') !== '' ? num('数量') : (item.qty || ''),
       num('仕入単価') !== '' ? num('仕入単価') : (item.cost || ''),
