@@ -93,6 +93,7 @@
 
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 
 // FMTファイル（Base64埋め込み）
@@ -146,13 +147,14 @@ function roundDownQty(qty) {
 // 検索結果からアイテム情報を抽出
 function extractItemsFromResults(dataArray) {
   var items = [];
-  dataArray.forEach(function(text) {
+  dataArray.forEach(function(text, idx) {
     var nameMatch = text.match(/商品名:([^\s]+)|商材名:([^\s]+)/);
     var costMatch = text.match(/仕入単価:(\d+\.?\d*)/);
     var qtyMatch = text.match(/数量:(\d+)/);
     var supplierMatch = text.match(/仕入先:([^\s\/]+)/);
-    var customerMatch = text.match(/仕入先:([^\s\/]+)/); 
+    var customerMatch = text.match(/仕入先:([^\s\/]+)/);
     var dateMatch = text.match(/納期:(\S+)/);
+    var scheduleMatch = text.match(/スケジュール:(\S*)/);
     var imageMatch = text.match(/画像:(\S+)/);
     var isKettei = text.includes('[受注実績]');
 
@@ -163,8 +165,10 @@ function extractItemsFromResults(dataArray) {
         qty: qtyMatch ? parseInt(qtyMatch[1]) : null,
         supplier: supplierMatch ? supplierMatch[1] : '要確認',
         date: dateMatch ? dateMatch[1] : '',
+        schedule: scheduleMatch ? scheduleMatch[1] : '',
         imageUrl: imageMatch ? imageMatch[1] : '',
         isKettei: isKettei,
+        sourceIndex: idx, // 元のデータ配列（例：uratoriRawPages）における位置。生データが必要な出力（Excel等）で使う
         rawText: text
       });
     }
@@ -178,6 +182,10 @@ function openPptxModal(fmtType) {
   currentSlideType = '6';
   document.getElementById('card6').classList.add('selected');
   document.getElementById('card2').classList.remove('selected');
+  document.getElementById('cardList').classList.remove('selected');
+  document.getElementById('step1Next').textContent = '次へ →';
+  // 「アイテムリスト（Excel）」は裏取りDB検索タブでのみ選択可能
+  document.getElementById('cardList').style.display = fmtType === 'uratori' ? '' : 'none';
 
   // 選択アイテム確認
   var tab = fmtType === 'jisseki' ? 'report' : (fmtType === 'hansoku' ? 'hansoku' : (fmtType === 'uratori' ? 'uratori' : 'suggest'));
@@ -208,6 +216,18 @@ function selectSlideType(type) {
   currentSlideType = type;
   document.getElementById('card6').classList.toggle('selected', type === '6');
   document.getElementById('card2').classList.toggle('selected', type === '2');
+  document.getElementById('cardList').classList.toggle('selected', type === 'list');
+  document.getElementById('step1Next').textContent = type === 'list' ? '📊 Excelを出力 →' : '次へ →';
+}
+
+// Step1の「次へ」ボタン用ルーター。アイテムリスト（Excel）は他形式と違い
+// 基本情報入力（Step2/3）が不要なため、選択直後にその場で生成してモーダルを閉じる
+function proceedFromStep1() {
+  if (currentSlideType === 'list') {
+    generateUratoriExcel();
+    return;
+  }
+  goToStep(2);
 }
 
 function goToStep(step) {
@@ -234,6 +254,62 @@ function goToStep(step) {
       document.getElementById('generateBtn').textContent = '📊 提案書を生成';
     }
   }
+}
+
+// 裏取りDB検索専用：選択したアイテムを仕入コスト内訳付きの一覧表としてExcel出力する
+// （顧客提出用のパワポとは別の、営業の手元用リストという位置付け）
+function generateUratoriExcel() {
+  var items = getSelectedItems('uratori');
+  if (items.length === 0) {
+    alert('商品が選択されていません。チェックボックスでリストに含める商品を選んでください。');
+    return;
+  }
+
+  var headers = ['商品名', '仕入先', '数量', '仕入単価', 'スケジュール', '印刷', '校正代', '版代',
+    '単価（本体代）', '単価（印刷代）', '単価（内職代）', '単価（副資材代）', 'その他一式金額', '作成日'];
+  var rows = [headers];
+
+  items.forEach(function(item) {
+    var page = (typeof item.sourceIndex === 'number') ? uratoriRawPages[item.sourceIndex] : null;
+    var p = page ? page.properties : {};
+    function rt(field) {
+      return (p[field] && p[field].rich_text && p[field].rich_text[0]) ? p[field].rich_text[0].text.content : '';
+    }
+    function num(field) {
+      return (p[field] && typeof p[field].number === 'number') ? p[field].number : '';
+    }
+    var name = (p['商品名'] && p['商品名'].title && p['商品名'].title[0]) ? p['商品名'].title[0].text.content : (item.name || '');
+    var createdDate = (p['作成日'] && p['作成日'].date && p['作成日'].date.start) ? p['作成日'].date.start : '';
+
+    rows.push([
+      name,
+      rt('仕入先') || item.supplier || '',
+      num('数量') !== '' ? num('数量') : (item.qty || ''),
+      num('仕入単価') !== '' ? num('仕入単価') : (item.cost || ''),
+      rt('スケジュール') || item.schedule || '',
+      rt('印刷'),
+      num('校正代'),
+      num('版代'),
+      num('単価（本体代）'),
+      num('単価（印刷代）'),
+      num('単価（内職代）'),
+      num('単価（副資材代）'),
+      num('その他一式金額'),
+      createdDate
+    ]);
+  });
+
+  var ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = headers.map(function() { return { wch: 14 }; });
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'アイテムリスト');
+
+  var today = new Date();
+  var fname = '裏取りDB_アイテムリスト_' + today.getFullYear() + String(today.getMonth() + 1).padStart(2, '0') + String(today.getDate()).padStart(2, '0') + '.xlsx';
+  XLSX.writeFile(wb, fname);
+
+  logEvent('成果物', '資料作成', '裏取りDBアイテムリスト（Excel）', 'アイテム数:' + items.length);
+  closePptxModal();
 }
 
 async function generatePptx() {
@@ -1851,6 +1927,7 @@ async function sendReportMore() {
 
 // ========== 裏取りDB検索 ==========
 var uratoriAllData = [];
+var uratoriRawPages = []; // Notionの生ページ（uratoriAllDataと同じ並び順）。アイテムリスト（Excel）出力で仕入コスト内訳等の生データを参照するために保持
 var uratoriShownCount = 0;
 var URATORI_SEARCH_PAGE_SIZE = 30;
 
@@ -1863,6 +1940,7 @@ function resetUratoriSearch() {
   document.getElementById('uratoriSupplierDomestic').checked = false;
   document.getElementById('uratoriSupplierOverseas').checked = false;
   uratoriAllData = [];
+  uratoriRawPages = [];
   uratoriShownCount = 0;
   var results = document.getElementById('uratoriResults');
   results.classList.remove('active');
@@ -1923,6 +2001,7 @@ async function sendUratoriSearch() {
 
     var uratoriResultsRaw = await searchNotionDB(URATORI_DB_ID, primaryKeyword, numOpts);
     uratoriResultsRaw = dedupePages(uratoriResultsRaw, 'uratori');
+    uratoriRawPages = uratoriResultsRaw;
     uratoriAllData = uratoriResultsRaw.map(function(r) { return pageToText(r, 'uratori'); });
     uratoriShownCount = Math.min(URATORI_SEARCH_PAGE_SIZE, uratoriAllData.length);
     var notionContext = uratoriAllData.length > 0 ? uratoriAllData.slice(0, uratoriShownCount).join('\n') : 'データが見つかりませんでした';
@@ -2278,7 +2357,13 @@ function buildCheckList(tab) {
     html += '<input type="checkbox" id="chk_' + listId + '_' + i + '">';
     html += '<label for="chk_' + listId + '_' + i + '">';
     html += '<strong>' + (item.name || '商品名不明') + '</strong>';
-    html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + qtyText + ' / ' + priceText + '）</span>';
+    if (tab === 'uratori') {
+      var costText = item.cost ? item.cost + '円' : '要確認';
+      var scheduleText = item.schedule || '不明';
+      html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + item.supplier + ' / ' + qtyText + ' / ' + costText + ' / ' + scheduleText + ' / ' + priceText + '）</span>';
+    } else {
+      html += ' <span style="color:#888;font-size:12px;">（' + src + ' / ' + qtyText + ' / ' + priceText + '）</span>';
+    }
     html += '</label>';
     html += '</div>';
   });
@@ -2340,10 +2425,14 @@ function getSelectedItems(tab) {
           <h4>詳細紹介</h4>
           <p>2アイテム/ページ<br>価格・memoあり</p>
         </div>
+        <div class="fmt-card" id="cardList" onclick="selectSlideType('list')" style="display:none;">
+          <h4>アイテムリスト</h4>
+          <p>Excel形式<br>仕入コスト内訳付き一覧表</p>
+        </div>
       </div>
       <div class="modal-btn-row">
         <button class="btn-secondary" onclick="closePptxModal()">キャンセル</button>
-        <button class="btn-primary" onclick="goToStep(2)">次へ →</button>
+        <button class="btn-primary" id="step1Next" onclick="proceedFromStep1()">次へ →</button>
       </div>
     </div>
 
